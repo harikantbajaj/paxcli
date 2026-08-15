@@ -683,7 +683,7 @@ async function startCommand(repoRoot: string, opts: StartOpts, out: Output): Pro
   const host = await createHostAdapter(hostId, opts.mockPatches);
 
   out.info(
-    `Preset ${pc.bold(preset)}: up to ${config.search.maxNodes} experiments across ${config.search.maxRounds} round(s), ${config.search.parallel} in parallel, budget $${config.budget.maxCostUsd.toFixed(2)} (spend can overshoot by at most one active agent call).`,
+    `Preset ${pc.bold(preset)}: up to ${config.search.maxNodes} experiments across ${config.search.maxRounds} round(s), ${config.search.parallel} in parallel, budget $${config.budget.maxCostUsd.toFixed(2)} (the budget is checked before each spawn; spend can overshoot by up to ${config.search.parallel} in-flight agent call${config.search.parallel > 1 ? 's' : ''}).`,
   );
 
   const outcome = await runOptimizeWithUi({ repoRoot, config, host, out });
