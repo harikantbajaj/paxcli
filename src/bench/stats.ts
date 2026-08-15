@@ -26,10 +26,17 @@ export interface SampleSummary {
 
 export function summarize(samples: number[]): SampleSummary {
   if (samples.length === 0) throw new Error('Cannot summarize zero samples');
-  const sorted = [...samples].sort((a, b) => a - b);
+  const sorted = Array.from(Float64Array.from(samples).sort());
   const n = sorted.length;
-  const mean = sorted.reduce((s, v) => s + v, 0) / n;
-  const variance = n > 1 ? sorted.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1) : 0;
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += sorted[i] as number;
+  const mean = sum / n;
+  let sq = 0;
+  for (let i = 0; i < n; i++) {
+    const d = (sorted[i] as number) - mean;
+    sq += d * d;
+  }
+  const variance = n > 1 ? sq / (n - 1) : 0;
   const stddev = Math.sqrt(variance);
   return {
     n,
@@ -123,23 +130,53 @@ export function bootstrapCI(
     seed = (seed * 1664525 + 1013904223) >>> 0;
     return seed / 0xffffffff;
   };
-  const resampleMedian = (data: number[]): number => {
-    const picks: number[] = [];
-    for (let i = 0; i < data.length; i++) {
-      picks.push(data[Math.floor(rand() * data.length)] as number);
+  // A resampled median needs only the two middle order statistics, and every
+  // draw comes from the fixed input multiset. So: sort each input once, map
+  // each original index to its rank in that order, and per resample count the
+  // drawn ranks and scan to the median pair — no per-iteration allocation or
+  // sort, with order statistics (and thus medians) identical to sorting picks.
+  const prepare = (data: number[]) => {
+    const n = data.length;
+    const order: number[] = new Array(n);
+    for (let i = 0; i < n; i++) order[i] = i;
+    order.sort((a, b) => (data[a] as number) - (data[b] as number));
+    const sortedVals = new Float64Array(n);
+    const rankOf = new Uint32Array(n);
+    for (let k = 0; k < n; k++) {
+      const src = order[k] as number;
+      sortedVals[k] = data[src] as number;
+      rankOf[src] = k;
     }
-    picks.sort((a, b) => a - b);
-    return percentile(picks, 50);
+    const idx = 0.5 * (n - 1);
+    const lo = Math.floor(idx);
+    return { n, sortedVals, rankOf, counts: new Uint32Array(n), lo, hi: Math.ceil(idx), frac: idx - lo };
   };
-  const deltas: number[] = [];
+  const resampleMedian = (s: ReturnType<typeof prepare>): number => {
+    const { n, sortedVals, rankOf, counts } = s;
+    counts.fill(0);
+    for (let i = 0; i < n; i++) {
+      const rank = rankOf[Math.floor(rand() * n)] as number;
+      counts[rank] = (counts[rank] as number) + 1;
+    }
+    let seen = 0;
+    let r = 0;
+    while (seen + (counts[r] as number) <= s.lo) seen += counts[r++] as number;
+    const vLo = sortedVals[r] as number;
+    while (seen + (counts[r] as number) <= s.hi) seen += counts[r++] as number;
+    return vLo * (1 - s.frac) + (sortedVals[r] as number) * s.frac;
+  };
+  const b = prepare(baseline);
+  const c = prepare(candidate);
+  const deltas = new Float64Array(iterations);
   for (let i = 0; i < iterations; i++) {
-    const bm = resampleMedian(baseline);
-    const cm = resampleMedian(candidate);
+    const bm = resampleMedian(b);
+    const cm = resampleMedian(c);
     const raw = ((bm - cm) / Math.abs(bm || 1)) * 100;
-    deltas.push(direction === 'minimize' ? raw : -raw);
+    deltas[i] = direction === 'minimize' ? raw : -raw;
   }
-  deltas.sort((a, b) => a - b);
-  return [percentile(deltas, 2.5), percentile(deltas, 97.5)];
+  deltas.sort();
+  const sortedDeltas = Array.from(deltas);
+  return [percentile(sortedDeltas, 2.5), percentile(sortedDeltas, 97.5)];
 }
 
 /** Cohen's d with pooled standard deviation. */
