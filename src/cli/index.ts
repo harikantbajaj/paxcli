@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Command } from 'commander';
@@ -19,12 +19,18 @@ import { Output } from './output.js';
 
 const program = new Command();
 
+// The version always comes from package.json (shipped one level above dist/),
+// so the CLI can never report a stale number again.
+const pkg = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+) as { version: string };
+
 program
   .name('paxcli')
   .description(
     'Verified autonomous code optimization: coding agents find performance improvements; Paxcli proves each one is real, safe, and reproducible.',
   )
-  .version('0.1.0');
+  .version(pkg.version);
 
 // ---------------------------------------------------------------- primary --
 

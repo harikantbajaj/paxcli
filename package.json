@@ -1,6 +1,6 @@
 {
   "name": "paxcli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Verified autonomous code optimization. Coding agents find performance improvements; Paxcli produces proof that each one is real, safe, and reproducible.",
   "type": "module",
   "license": "Apache-2.0",
