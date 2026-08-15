@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "benchmark": {
+    "sampleCmd": "node bench/perf.mjs",
+    "metric": "stats_pipeline_ms",
+    "direction": "minimize",
+    "warmupSamples": 2,
+    "samples": 8,
+    "maxNoisePct": 12
+  },
+  "withheld": { "cmd": "node .paxcli/withheld/check.mjs" },
+  "gates": [
+    {
+      "id": "tests",
+      "name": "stats unit tests",
+      "cmd": "node --test bench/stats.test.mjs",
+      "kind": "tests"
+    },
+    {
+      "id": "equiv",
+      "name": "output equivalence",
+      "cmd": "node bench/equivalence.mjs",
+      "kind": "equivalence"
+    }
+  ],
+  "constraints": [],
+  "policy": {
+    "writable": ["src/bench/stats.ts"],
+    "protected": ["paxcli.config.json", "bench/**"]
+  },
+  "search": { "minImprovementPct": 5 },
+  "budget": { "maxCostUsd": 2 },
+  "host": { "id": "claude-code" }
+}
