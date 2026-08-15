@@ -13,6 +13,8 @@ export function shortId(length = 8): string {
 }
 
 export function runId(now = new Date()): string {
-  const stamp = now.toISOString().slice(0, 10).replaceAll('-', '');
-  return `${stamp}-${shortId(6)}`;
+  // Date AND time in the id so runs sort chronologically — "latest run"
+  // resolution depends on lexicographic order.
+  const stamp = now.toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
+  return `${stamp}-${shortId(4)}`;
 }
