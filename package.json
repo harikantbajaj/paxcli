@@ -1,9 +1,18 @@
 {
   "name": "paxcli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Verified autonomous code optimization. Coding agents find performance improvements; Paxcli produces proof that each one is real, safe, and reproducible.",
   "type": "module",
   "license": "Apache-2.0",
+  "author": "Harikant Bajaj <harikant@processflows.ai>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/harikantbajaj/paxcli.git"
+  },
+  "homepage": "https://github.com/harikantbajaj/paxcli#readme",
+  "bugs": {
+    "url": "https://github.com/harikantbajaj/paxcli/issues"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -21,6 +30,7 @@
   "files": [
     "dist",
     "examples/demo-api",
+    "examples/demo-patches.json",
     "README.md",
     "LICENSE"
   ],
@@ -32,7 +42,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
-    "check": "npm run typecheck && npm run lint && npm run test"
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "prepublishOnly": "npm run check && npm run build"
   },
   "keywords": [
     "performance",
