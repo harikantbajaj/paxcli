@@ -40,9 +40,10 @@ export class ClaudeCodeAdapter implements HostAdapter {
 
   async spawnAgent(opts: AgentSpawnOpts): Promise<AgentRunResult> {
     const started = Date.now();
+    // The prompt travels via stdin: passing multi-line text as a CLI argument
+    // through shell:true gets mangled by cmd.exe on Windows.
     const args = [
       '-p',
-      opts.prompt,
       '--output-format',
       'stream-json',
       '--verbose',
@@ -63,7 +64,7 @@ export class ClaudeCodeAdapter implements HostAdapter {
       forceKillAfterDelay: 5000,
       reject: false,
       buffer: false,
-      stdin: 'ignore',
+      input: opts.prompt,
       stdout: 'pipe',
       stderr: 'pipe',
     });

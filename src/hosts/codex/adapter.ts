@@ -34,6 +34,8 @@ export class CodexAdapter implements HostAdapter {
 
   async spawnAgent(opts: AgentSpawnOpts): Promise<AgentRunResult> {
     const started = Date.now();
+    // "-" makes codex exec read the prompt from stdin — multi-line prompts
+    // cannot survive as CLI arguments through shell:true on Windows.
     const args = [
       'exec',
       '--json',
@@ -44,7 +46,7 @@ export class CodexAdapter implements HostAdapter {
       '--skip-git-repo-check',
     ];
     if (opts.model) args.push('--model', opts.model);
-    args.push(opts.prompt);
+    args.push('-');
 
     const child = execa('codex', args, {
       cwd: opts.cwd,
@@ -56,7 +58,7 @@ export class CodexAdapter implements HostAdapter {
       forceKillAfterDelay: 5000,
       reject: false,
       buffer: false,
-      stdin: 'ignore',
+      input: opts.prompt,
       stdout: 'pipe',
       stderr: 'pipe',
     });
