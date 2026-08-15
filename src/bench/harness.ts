@@ -63,7 +63,9 @@ export class BenchmarkHarness {
           stdin: 'ignore',
           stdout: 'pipe',
           stderr: 'pipe',
-          detached: false,
+          // POSIX: own process group so shutdown can kill the whole tree
+          // (shell + app) at once. Windows uses taskkill /T instead.
+          detached: process.platform !== 'win32',
         });
         server.catch(() => {});
         server.stdout?.on('data', (c: Buffer) => outputTail.push(c));
@@ -194,19 +196,31 @@ class OutputTail {
 
 async function stopProcess(proc: ResultPromise): Promise<void> {
   try {
-    // shell:true means proc is the shell; on Windows killing it leaves the
-    // real server running as an orphaned grandchild. Kill the whole tree.
+    // shell:true means proc is the shell; killing only the shell leaves the
+    // real server as an orphaned grandchild holding our stdio pipes open —
+    // which also blocks execa's promise from ever settling. Kill the tree.
     if (process.platform === 'win32' && proc.pid) {
       await execa('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { reject: false });
-      await proc.catch(() => {});
-      return;
+    } else if (proc.pid) {
+      // Negative pid = the whole process group (see detached above).
+      try {
+        process.kill(-proc.pid, 'SIGTERM');
+      } catch {
+        proc.kill('SIGTERM');
+      }
+      await Promise.race([proc.catch(() => {}), sleep(2000)]);
+      if (proc.exitCode === undefined || proc.exitCode === null) {
+        try {
+          process.kill(-proc.pid, 'SIGKILL');
+        } catch {
+          proc.kill('SIGKILL');
+        }
+      }
     }
-    proc.kill('SIGTERM');
-    await Promise.race([proc.catch(() => {}), sleep(3000)]);
-    if (proc.exitCode === undefined || proc.exitCode === null) {
-      proc.kill('SIGKILL');
-      await proc.catch(() => {});
-    }
+    // Never wait forever on stream closure — destroy our ends and move on.
+    proc.stdout?.destroy();
+    proc.stderr?.destroy();
+    await Promise.race([proc.catch(() => {}), sleep(2000)]);
   } catch {
     // already dead
   }
