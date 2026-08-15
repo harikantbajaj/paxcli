@@ -6,16 +6,20 @@ import { Command } from 'commander';
 import { execa } from 'execa';
 import pc from 'picocolors';
 import { BenchmarkHarness } from '../bench/harness.js';
-import { CONFIG_FILENAME, loadConfig, parseConfig } from '../config/schema.js';
+import { CONFIG_FILENAME, type PaxcliConfig, loadConfig, parseConfig } from '../config/schema.js';
+import { TASK_MARKER_FILENAME } from '../engine/task-loop.js';
 import { createHostAdapter } from '../hosts/claude-code/adapter.js';
+import { detectHosts } from '../hosts/detect.js';
 import type { Receipt } from '../proof/receipt.js';
 import { renderVerificationCard } from '../report/card.js';
-import { EventStore } from '../tree/store.js';
+import { deleteInternalRefs, listInternalRefs } from '../snapshot/build.js';
+import { EventStore, runDir } from '../tree/store.js';
 import { improvementPct } from '../tree/types.js';
 import { EXP_BRANCH_PREFIX, WorktreeBackend, gitOutput, snapshotRepo } from '../worktree/local.js';
 import { runDemo } from './demo.js';
 import { type PresetName, applyPreset, runOptimizeWithUi } from './optimize-ui.js';
 import { Output } from './output.js';
+import { looksLikePerformanceRequest, runTaskFlow } from './task-ui.js';
 
 const program = new Command();
 
@@ -33,6 +37,22 @@ program
   .version(pkg.version);
 
 // ---------------------------------------------------------------- primary --
+
+program
+  .command('task [request...]', { isDefault: true })
+  .description(
+    'Describe a change in plain English; paxcli isolates, implements, validates, and applies it',
+  )
+  .option('--host <id>', 'claude-code | codex | mock (default: auto-detect)')
+  .option('--model <model>', 'model override for the agent')
+  .option('--budget <usd>', 'maximum agent spend in USD', '5')
+  .option('--mock-patches <file>', 'patch script for the mock host (testing)')
+  .option('--json', 'machine-readable output on stdout')
+  .option('-y, --yes', 'apply the result without asking')
+  .action(async (request: string[], opts: TaskCmdOpts) => {
+    const out = new Output(Boolean(opts.json));
+    await guard(out, () => taskCommand(request, opts, out));
+  });
 
 program
   .command('demo')
@@ -73,6 +93,8 @@ program
       const runs = await EventStore.listRuns(repoRoot);
       let target: string | null = null;
       for (const id of [...runs].reverse()) {
+        // Task runs are single-shot and cannot be resumed — re-run the request instead.
+        if (existsSync(path.join(runDir(repoRoot, id), TASK_MARKER_FILENAME))) continue;
         const store = await EventStore.open(repoRoot, id);
         const summary = await store.replay();
         if (!summary.finished) {
@@ -224,13 +246,37 @@ program
     } else {
       add(CONFIG_FILENAME, false, 'not found — `paxcli start` will create a template');
     }
-    const host = await createHostAdapter(opts.host);
-    const detection = await host.detect();
+    const hosts = await detectHosts();
+    const usable = hosts.filter((h) => h.installed && h.authenticated !== false);
     add(
-      `host: ${opts.host}`,
-      detection.found,
-      detection.found ? (detection.version ?? 'ok') : (detection.problem ?? 'not found'),
+      'coding agent (Claude Code or Codex)',
+      usable.length > 0,
+      hosts
+        .map(
+          (h) =>
+            `${h.label}: ${
+              h.installed
+                ? `${h.version ?? 'installed'}${
+                    h.authenticated === true
+                      ? ', signed in'
+                      : h.authenticated === false
+                        ? ', signed out'
+                        : ''
+                  }`
+                : 'not found'
+            }`,
+        )
+        .join(' · '),
     );
+    if (opts.host && opts.host !== 'claude-code') {
+      const host = await createHostAdapter(opts.host);
+      const detection = await host.detect();
+      add(
+        `host: ${opts.host}`,
+        detection.found,
+        detection.found ? (detection.version ?? 'ok') : (detection.problem ?? 'not found'),
+      );
+    }
 
     for (const c of checks) {
       out.info(`${c.ok ? pc.green('✓') : pc.red('✗')} ${c.name} — ${c.detail}`);
@@ -258,7 +304,14 @@ program
           `Deleted ${deletedBranches.length} ${EXP_BRANCH_PREFIX}* branch(es). Winner branches were kept.`,
         );
       }
-      out.result({ removedWorktrees: removed, deletedBranches });
+      const refs = await listInternalRefs(process.cwd()).catch(() => [] as string[]);
+      if (refs.length > 0) {
+        await deleteInternalRefs(process.cwd(), refs);
+        out.info(
+          `Deleted ${refs.length} internal snapshot/result ref(s). Saved patches under .paxcli/runs/ still apply while the files they touch are unchanged.`,
+        );
+      }
+      out.result({ removedWorktrees: removed, deletedBranches, deletedRefs: refs });
     });
   });
 
@@ -636,6 +689,75 @@ configCmd
       out.result({ valid: true });
     });
   });
+
+// ------------------------------------------------------------------- task --
+
+interface TaskCmdOpts {
+  host?: string;
+  model?: string;
+  budget?: string;
+  mockPatches?: string;
+  json?: boolean;
+  yes?: boolean;
+}
+
+async function taskCommand(request: string[], opts: TaskCmdOpts, out: Output): Promise<void> {
+  let task = request.join(' ').trim();
+  if (!task) {
+    if (opts.json || !process.stdin.isTTY || !process.stdout.isTTY) {
+      throw new Error('Describe the change: paxcli "improve the form-submission page UI"');
+    }
+    const { text, isCancel } = await import('@clack/prompts');
+    const answer = await text({
+      message: 'What do you want to change?',
+      placeholder: 'e.g. Improve the form-submission page UI and make it responsive',
+    });
+    if (isCancel(answer) || !String(answer ?? '').trim()) return;
+    task = String(answer).trim();
+  }
+
+  const cwd = process.cwd();
+
+  // Performance-flavored requests use the verified optimization engine when a
+  // benchmark exists; otherwise task mode runs with an honest "not measured" note.
+  if (looksLikePerformanceRequest(task)) {
+    let config: PaxcliConfig | null = null;
+    try {
+      config = await loadConfig(cwd);
+    } catch {
+      config = null;
+    }
+    if (config) {
+      out.info(
+        'This looks like a performance request and a benchmark is configured — running the verified optimization engine.',
+      );
+      const host = await createHostAdapter(opts.host ?? config.host.id, opts.mockPatches);
+      const outcome = await runOptimizeWithUi({
+        repoRoot: cwd,
+        config,
+        host,
+        out,
+        extraSteering: `The user's specific request: ${task}`,
+      });
+      if (!outcome.bestNode) process.exitCode = 1;
+      return;
+    }
+    out.info(
+      'Performance-flavored request, but no benchmark is configured — running in task mode. Checks can pass, but the speedup will NOT be measured. Configure paxcli.config.json for verified optimization.',
+    );
+  }
+
+  await runTaskFlow({
+    cwd,
+    request: task,
+    out,
+    ...(opts.host ? { hostId: opts.host } : {}),
+    ...(opts.mockPatches ? { mockPatchesFile: opts.mockPatches } : {}),
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.budget ? { budgetUsd: Number(opts.budget) } : {}),
+    ...(opts.yes ? { yes: true } : {}),
+  });
+}
 
 // ------------------------------------------------------------------ start --
 

@@ -15,10 +15,12 @@ export function buildAgentEnv(
     if (value === undefined) continue;
     if (allow.has(key.toUpperCase())) env[key] = value;
   }
-  // The Claude Code CLI needs its own auth/config discovery to work.
+  // The agent CLIs need their own auth/config discovery to work.
   for (const key of [
     'ANTHROPIC_API_KEY',
     'CLAUDE_CODE_OAUTH_TOKEN',
+    'OPENAI_API_KEY',
+    'CODEX_HOME',
     'APPDATA',
     'LOCALAPPDATA',
     'PROGRAMFILES',

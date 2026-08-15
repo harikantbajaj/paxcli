@@ -34,6 +34,7 @@ export interface OptimizeUiOptions {
   out: Output;
   resumeRunId?: string;
   showPermissions?: boolean;
+  extraSteering?: string | null;
 }
 
 /** Shared runner: SIGINT-safe optimize with human/JSON reporting. */
@@ -67,6 +68,7 @@ export async function runOptimizeWithUi(opts: OptimizeUiOptions): Promise<RunOut
       signal: controller.signal,
       onStatus: (msg) => out.status(msg),
       ...(opts.resumeRunId ? { resumeRunId: opts.resumeRunId } : {}),
+      ...(opts.extraSteering ? { extraSteering: opts.extraSteering } : {}),
     });
     reportOutcome(outcome, out);
     return outcome;

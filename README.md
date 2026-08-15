@@ -21,6 +21,19 @@
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+## Just describe a change
+
+```bash
+cd my-project
+npx paxcli
+# What do you want to change?
+# > Improve the form-submission page UI and make it responsive
+```
+
+That's the whole setup. Paxcli detects your coding agent (Claude Code or Codex), snapshots your working tree — committed, uncommitted, and untracked files, no commit required — discovers your test/lint/build commands, and hands the task to the agent in an isolated git worktree. Checks must pass (failures go back to the agent for up to two repair attempts), then the agent-only diff is applied to your working directory with your confirmation, unstaged, with a recovery patch saved. Existing tests, CI workflows, and credentials are integrity-pinned — an agent that touches them is auto-rejected.
+
+Honest labels, always: a UI change gets **"checks passed"**, never "faster" or "better". The verified vocabulary below (Measured / Validated / Equivalent / Reproduced) is reserved for benchmark-backed optimization — which performance-flavored requests use automatically when a benchmark is configured.
+
 ## See it in two minutes — no API keys
 
 ```bash
@@ -80,6 +93,7 @@ Details and limitations: [docs/trust-boundary.md](docs/trust-boundary.md) · [do
 ## Commands
 
 ```
+paxcli [request]            describe any change; isolate → implement → validate → apply
 paxcli demo                 the full experience on a bundled slow API
 paxcli start                guided run on this repository
 paxcli resume               continue an interrupted run
@@ -112,7 +126,7 @@ Every command supports `--json`: stable JSON on stdout, progress on stderr. Each
 
 ## What Paxcli is not
 
-- It does not merge code. Ever.
+- It does not merge or commit code. Ever. Task results land unstaged in your working directory only after your confirmation; optimization winners land on a branch you review.
 - It does not claim statistical certainty small samples can't support.
 - It does not send telemetry. There is none in this version.
 - It is not a sandbox: agents run with your user account's permissions inside a worktree. Read [docs/trust-boundary.md](docs/trust-boundary.md) before running on sensitive repositories.

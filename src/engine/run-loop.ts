@@ -33,6 +33,8 @@ export interface RunOptions {
   onStatus: (msg: string) => void;
   /** Resume an existing run instead of starting fresh. */
   resumeRunId?: string;
+  /** One-off steering injected for this run (e.g. the user's task text), on top of .paxcli/steering.md. */
+  extraSteering?: string | null;
 }
 
 export interface RunOutcome {
@@ -162,7 +164,8 @@ export async function runOptimize(opts: RunOptions): Promise<RunOutcome> {
       const current = await store.replay();
       const best = pickBest(current.nodes, config);
       const bestScore = best?.score ?? null;
-      const steering = await readSteering(repoRoot);
+      const fileSteering = await readSteering(repoRoot);
+      const steering = [opts.extraSteering, fileSteering].filter(Boolean).join('\n') || null;
       if (steering) onStatus('User steering is active for this round');
 
       const roundNodeIds: string[] = [];
