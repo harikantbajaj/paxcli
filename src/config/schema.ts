@@ -91,6 +91,19 @@ export const paxcliConfigSchema = z.object({
   gates: z.array(gateSchema).default([]),
   constraints: z.array(constraintSchema).default([]),
   policy: policySchema.default({}),
+  /**
+   * Withheld evaluator cases: a command run by the ENGINE (cwd = main repo,
+   * not the worktree) with env TARGET_DIR (the experiment checkout) and
+   * WITHHELD_DIR (.paxcli/withheld, gitignored so worktrees never contain
+   * it). Exit 0 = behavior holds. On failure only a `CATEGORY: <slug>` line
+   * is shared with agents.
+   */
+  withheld: z
+    .object({
+      cmd: z.string().min(1),
+      timeoutMs: z.number().int().positive().default(300_000),
+    })
+    .optional(),
   search: z
     .object({
       maxRounds: z.number().int().positive().default(3),
@@ -99,6 +112,17 @@ export const paxcliConfigSchema = z.object({
       plateauRounds: z.number().int().positive().default(2),
       /** Reject wins smaller than max(noise floor, this) percent. */
       minImprovementPct: z.number().nonnegative().default(1),
+      /** Parent selection: always extend the best, or explore with probability epsilon. */
+      strategy: z.enum(['best-first', 'epsilon-greedy']).default('best-first'),
+      epsilon: z.number().min(0).max(1).default(0.2),
+      /**
+       * Agent roles per experiment: 'single' (one agent forms and implements
+       * the hypothesis) or 'split' (a researcher proposes, an executor
+       * implements). The evaluator is deterministic engine code either way.
+       */
+      roles: z.enum(['single', 'split']).default('single'),
+      /** Re-verify the winner in a fresh worktree after the loop (grade: reproduced). */
+      reproduceWinner: z.boolean().default(true),
     })
     .default({}),
   budget: z
@@ -118,7 +142,7 @@ export const paxcliConfigSchema = z.object({
     .default({}),
   host: z
     .object({
-      id: z.enum(['claude-code', 'mock']).default('claude-code'),
+      id: z.enum(['claude-code', 'codex', 'mock']).default('claude-code'),
       model: z.string().optional(),
     })
     .default({}),

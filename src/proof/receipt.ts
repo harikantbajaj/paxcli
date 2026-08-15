@@ -31,10 +31,17 @@ export interface Receipt {
     improvementPct: number;
     noiseFloorPct: number;
     requiredPct: number;
+    ci95: [number, number] | null;
+    effectSize: number | null;
     display: string;
   } | null;
   gates: GateResult[];
   pinsVerified: boolean;
+  /** Suspicion-level detector findings: risks a human reviewer should check. */
+  risks: string[];
+  withheld: { configured: boolean; pass: boolean; category: string | null } | null;
+  /** Fresh-workspace re-verification of the winner, when performed. */
+  reproduction: { held: boolean; display: string } | null;
   environment: {
     os: string;
     arch: string;
@@ -53,6 +60,9 @@ export function buildReceipt(params: {
   comparison: Comparison | null;
   pinsVerified: boolean;
   configHash: string;
+  risks?: string[];
+  withheld?: Receipt['withheld'];
+  reproduction?: Receipt['reproduction'];
 }): Receipt {
   const { runId, node, baseSha, baseline, comparison, pinsVerified, configHash } = params;
   return {
@@ -74,11 +84,16 @@ export function buildReceipt(params: {
           improvementPct: comparison.improvementPct,
           noiseFloorPct: comparison.noiseFloorPct,
           requiredPct: comparison.requiredPct,
+          ci95: comparison.ci95,
+          effectSize: comparison.effectSize,
           display: comparison.display,
         }
       : null,
     gates: node.gateResults,
     pinsVerified,
+    risks: params.risks ?? [],
+    withheld: params.withheld ?? null,
+    reproduction: params.reproduction ?? null,
     environment: {
       os: `${process.platform} ${process.arch}`,
       arch: process.arch,
@@ -90,8 +105,16 @@ export function buildReceipt(params: {
   };
 }
 
+/** Writes the full receipt plus a redacted variant safe for sharing. */
 export async function writeReceipt(receiptsDir: string, receipt: Receipt): Promise<string> {
   const file = path.join(receiptsDir, `${receipt.nodeId}.json`);
   await writeFile(file, JSON.stringify(receipt, null, 2), 'utf8');
+  const { redactValue } = await import('./redact.js');
+  const redacted = redactValue(receipt);
+  await writeFile(
+    path.join(receiptsDir, `${receipt.nodeId}.redacted.json`),
+    JSON.stringify(redacted, null, 2),
+    'utf8',
+  );
   return file;
 }

@@ -32,8 +32,43 @@ export async function runDemo(out: Output): Promise<RunOutcome> {
   out.info(`Demo repository: ${workDir}`);
   out.info('Watch for the two cheating attempts the Proof Layer rejects.\n');
 
+  // Withheld evaluator case: same report logic, but on a dataset the agents
+  // never see (it lives under .paxcli/, which is gitignored and therefore
+  // absent from every experiment worktree). A hard-coded response that fools
+  // the visible tests still dies here.
+  const withheldDirPath = path.join(workDir, '.paxcli', 'withheld');
+  await mkdir(withheldDirPath, { recursive: true });
+  const { stdout: withheldExpected } = await execa(
+    'node',
+    [
+      '-e',
+      "import('./lib.js').then(m => console.log(JSON.stringify(m.buildReport(m.makeDataset(7777)))))",
+    ],
+    { cwd: workDir },
+  );
+  await writeFile(path.join(withheldDirPath, 'expected.json'), String(withheldExpected).trim());
+  await writeFile(
+    path.join(withheldDirPath, 'check.mjs'),
+    [
+      "import { readFileSync } from 'node:fs';",
+      "import path from 'node:path';",
+      "import { pathToFileURL } from 'node:url';",
+      'const target = process.env.TARGET_DIR;',
+      'const withheldDir = process.env.WITHHELD_DIR;',
+      "const lib = await import(pathToFileURL(path.join(target, 'lib.js')).href);",
+      'const actual = JSON.stringify(lib.buildReport(lib.makeDataset(7777)));',
+      "const expected = readFileSync(path.join(withheldDir, 'expected.json'), 'utf8').trim();",
+      'if (actual !== expected) {',
+      "  console.error('CATEGORY: hidden-case-mismatch');",
+      '  process.exit(1);',
+      '}',
+      "console.log('withheld case holds');",
+    ].join('\n'),
+  );
+
   const demoConfig = {
     version: 1,
+    withheld: { cmd: 'node .paxcli/withheld/check.mjs' },
     benchmark: {
       sampleCmd: 'node bench.js',
       server: { startCmd: 'node server.js', readyUrl: 'http://127.0.0.1:{port}/health' },

@@ -41,6 +41,31 @@ describe('compare', () => {
   });
 });
 
+describe('inference', () => {
+  it('reports a CI and effect size with enough samples', () => {
+    const c = compare([100, 101, 99, 102, 100, 98], [50, 51, 49, 52, 50, 48], 'minimize', 1);
+    expect(c.ci95).not.toBeNull();
+    const [lo, hi] = c.ci95 as [number, number];
+    expect(lo).toBeLessThanOrEqual(hi);
+    expect(lo).toBeGreaterThan(30); // improvement clearly around 50%
+    expect(c.effectSize).toBeGreaterThan(2);
+    expect(c.display).toContain('95% CI');
+  });
+
+  it('refuses inference below 5 samples per side', () => {
+    const c = compare([100, 99, 101], [50, 51, 49], 'minimize', 1);
+    expect(c.ci95).toBeNull();
+    expect(c.effectSize).toBeNull();
+    expect(c.display).not.toContain('CI');
+  });
+
+  it('is deterministic for identical inputs', () => {
+    const a = compare([100, 101, 99, 102, 100], [50, 51, 49, 52, 50], 'minimize', 1);
+    const b = compare([100, 101, 99, 102, 100], [50, 51, 49, 52, 50], 'minimize', 1);
+    expect(a.ci95).toEqual(b.ci95);
+  });
+});
+
 describe('assessStability', () => {
   it('flags noisy benchmarks', () => {
     const v = assessStability([10, 30, 5, 50, 12]);

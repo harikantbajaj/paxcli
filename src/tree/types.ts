@@ -91,6 +91,7 @@ export type EngineEvent =
   | { type: 'node_updated'; nodeId: string; patch: Partial<ExperimentNode> }
   | { type: 'insight_added'; insight: Insight }
   | { type: 'cost_recorded'; nodeId: string; costUsd: number }
+  | { type: 'winner_reproduced'; nodeId: string; held: boolean; display: string }
   | { type: 'run_finished'; reason: string; bestNodeId: string | null; finishedAt: string }
   | { type: 'run_interrupted'; at: string };
 

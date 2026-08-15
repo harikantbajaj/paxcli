@@ -12,6 +12,9 @@ export function buildExperimentPrompt(params: {
   baseline: Score;
   bestSoFar: Score | null;
   insights: Insight[];
+  steering?: string | null;
+  /** Researcher-proposed plan (split-roles mode); the executor implements it. */
+  plan?: string | null;
 }): string {
   const { config, baseline, bestSoFar, insights } = params;
   const direction = config.benchmark.direction === 'minimize' ? 'reduce' : 'increase';
@@ -56,11 +59,59 @@ export function buildExperimentPrompt(params: {
       ...recent.map((i) => `- [${i.kind}] ${i.text}`),
     );
   }
+  if (params.steering) {
+    lines.push(
+      '',
+      'USER STEERING (instructions from the human running this — you must follow them):',
+      params.steering,
+    );
+  }
+  if (params.plan) {
+    lines.push(
+      '',
+      'A researcher already analyzed the codebase and proposed this plan — implement exactly this approach:',
+      params.plan,
+    );
+  }
   lines.push(
     '',
     'When you are done, end your final message with a single line:',
     'HYPOTHESIS: <one sentence describing the change you made and why it should be faster>',
   );
+  return lines.join('\n');
+}
+
+/**
+ * Researcher prompt (split-roles mode): analyze and propose, but change
+ * nothing. The executor implements the returned plan in a separate call.
+ */
+export function buildResearchPrompt(params: {
+  config: PaxcliConfig;
+  baseline: Score;
+  bestSoFar: Score | null;
+  insights: Insight[];
+  steering?: string | null;
+}): string {
+  const { config, baseline, bestSoFar, insights } = params;
+  const direction = config.benchmark.direction === 'minimize' ? 'reduce' : 'increase';
+  const lines: string[] = [
+    `You are a performance researcher. Analyze this repository and propose ONE concrete change to ${direction} the metric "${config.benchmark.metric}".`,
+    `Current baseline: ${baseline.value.toFixed(2)}.`,
+    bestSoFar
+      ? `Best so far this run: ${bestSoFar.value.toFixed(2)} — your proposal must plausibly beat it.`
+      : '',
+    '',
+    'DO NOT edit any files. Read the code, then answer with exactly:',
+    'HYPOTHESIS: <one sentence>',
+    'APPROACH: <3-6 sentences: which files to change and how>',
+  ].filter(Boolean);
+  const recent = insights.slice(-8);
+  if (recent.length > 0) {
+    lines.push('', 'Already ruled out:', ...recent.map((i) => `- ${i.text}`));
+  }
+  if (params.steering) {
+    lines.push('', 'USER STEERING (must follow):', params.steering);
+  }
   return lines.join('\n');
 }
 

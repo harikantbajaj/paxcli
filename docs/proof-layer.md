@@ -8,11 +8,11 @@ Results are graded, never binary:
 
 1. **Measured** — beat the local benchmark.
 2. **Validated** — benchmark reliability checks passed (stable baseline, improvement above the noise floor).
-3. **Equivalent** — visible + withheld behavior checks passed *(P1)*.
-4. **Reproduced** — held in a fresh workspace after all agents stopped *(P1)*.
-5. **Production-confirmed** — held in CI/staging/production metrics *(P2)*.
+3. **Equivalent** — visible gates *and* withheld behavior checks passed.
+4. **Reproduced** — held when re-measured in brand-new worktrees, interleaved with a fresh baseline, after all agents stopped.
+5. **Production-confirmed** — held in CI/staging/production metrics *(roadmap — requires monitoring integrations)*.
 
-The current release reaches **Validated**. Higher grades appear in the card as they are implemented — nothing is ever displayed as more verified than it is.
+The current release reaches **Reproduced**. Nothing is ever displayed as more verified than it is.
 
 ## The evaluation pipeline
 

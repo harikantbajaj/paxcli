@@ -55,17 +55,21 @@ git diff HEAD...paxcli/winner/<run-id>
 |---|---|
 | **Measured** | Beat the local benchmark |
 | **Validated** | Benchmark reliability checks passed |
-| **Equivalent** | Behavior checks passed *(P1)* |
-| **Reproduced** | Held in a fresh environment *(P1)* |
-| **Production-confirmed** | Held in CI/staging/real traffic *(P2)* |
+| **Equivalent** | Visible + withheld behavior checks passed |
+| **Reproduced** | Held when re-measured in brand-new worktrees, interleaved with a fresh baseline |
+| **Production-confirmed** | Held in CI/staging/real traffic *(roadmap)* |
 
 Layered defenses, honestly framed — Paxcli **detects and reduces** common reward-hacking techniques, it does not claim to prevent all of them:
 
 - **Integrity pins**: protected files (benchmarks, tests, CI, config) are hash-pinned via git blobs and verified *before* any score is computed — in the working tree and the whole experiment ancestry.
+- **Static hack detectors**: skipped/focused tests, timing and randomness monkey-patching, and forbidden lockfile changes reject the experiment; softer signals (empty catches, net assertion removal) land on the receipt as *remaining risks* for the reviewer.
 - **Gates**: your test suite and output-equivalence checks run on every experiment. Any failure rejects it regardless of speed.
-- **Noise-derived thresholds**: an improvement smaller than the measured benchmark noise is never accepted. p95 is refused below 20 observations.
+- **Withheld evaluator cases**: behavior checks whose inputs live outside the worktree (`.paxcli/withheld/`, gitignored). Agents only ever learn the failure category — never the inputs or expected outputs.
+- **Fresh reproduction**: the winner is re-measured in brand-new worktrees against a fresh baseline (interleaved, so machine drift hits both sides) before it earns the *Reproduced* grade.
+- **Noise-derived thresholds**: an improvement smaller than the measured benchmark noise is never accepted; bootstrap 95% confidence intervals and effect size are reported when samples allow; p95 is refused below 20 observations.
 - **Env filtering**: agents receive an allowlist of environment variables, never your full environment.
-- **Deterministic evaluator**: engine code decides acceptance. No agent ever judges its own work.
+- **Redacted receipts**: every receipt gets a secret-scrubbed variant, and that's the only one reports and PRs ever use.
+- **Deterministic evaluator**: engine code decides acceptance. No agent ever judges its own work — including in split-role mode, where a researcher proposes and an executor implements.
 
 Details and limitations: [docs/trust-boundary.md](docs/trust-boundary.md) · [docs/proof-layer.md](docs/proof-layer.md)
 
@@ -77,21 +81,29 @@ paxcli start                guided run on this repository
 paxcli resume               continue an interrupted run
 paxcli status               latest run at a glance
 paxcli apply [nodeId]       create a reviewable winner branch
+paxcli steer <message>      instruct an active run (picked up next round)
+paxcli dashboard            read-only live view (127.0.0.1, token-protected)
+paxcli pr [nodeId]          open a GitHub PR with the evidence attached
 paxcli doctor               environment checks with exact repair steps
 paxcli gc [--branches]      clean worktrees / experiment branches
 
 paxcli run list             past runs
 paxcli run explain <id>     full receipt + Verification Card
+paxcli run reproduce <id>   re-verify a result in brand-new worktrees
+paxcli run report           shareable (redacted) markdown report
 paxcli benchmark validate   is your benchmark reliable enough to optimize against?
+paxcli benchmark discover   ranked optimization opportunities (static heuristics)
+paxcli ci baseline          store a performance baseline snapshot
+paxcli ci verify            fail CI when performance regresses beyond tolerance
 paxcli config validate      validate paxcli.config.json
 ```
 
-Every command supports `--json`: stable JSON on stdout, progress on stderr.
+Every command supports `--json`: stable JSON on stdout, progress on stderr. Each run also writes a **research journal** (`.paxcli/runs/<id>/journal.md`) — what was tried, what worked, what got ruled out — so even a run with no winner leaves knowledge behind.
 
 ## Supported today
 
 - **Repos**: Node.js HTTP APIs (Fastify/Express or anything with a start command + readiness URL), or any repo whose benchmark fits a single sample command.
-- **Agents**: Claude Code. (Codex CLI is next — the `HostAdapter` interface is 4 methods; contributions welcome.)
+- **Agents**: Claude Code and Codex CLI (`host.id` in config, or `--host`). Adding another host is a 4-method `HostAdapter`.
 - **Platforms**: Windows, macOS, Linux. Node ≥ 20.
 
 ## What Paxcli is not

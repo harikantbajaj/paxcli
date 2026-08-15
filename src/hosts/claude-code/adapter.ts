@@ -160,6 +160,10 @@ export class ClaudeCodeAdapter implements HostAdapter {
 export function createHostAdapter(id: string, mockPatchesFile?: string): Promise<HostAdapter> {
   return (async () => {
     if (id === 'claude-code') return new ClaudeCodeAdapter();
+    if (id === 'codex') {
+      const { CodexAdapter } = await import('../codex/adapter.js');
+      return new CodexAdapter();
+    }
     if (id === 'mock') {
       const { MockHostAdapter, loadMockPatches } = await import('../mock/adapter.js');
       const patches = mockPatchesFile ? await loadMockPatches(mockPatchesFile) : [];

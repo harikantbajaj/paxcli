@@ -12,7 +12,9 @@ What Paxcli enforces, what enforces it, and what is **not** enforced. No securit
 | Budget ceiling | checked before each agent spawn | **Soft** — can overshoot by one active agent call, and the UI says so |
 | Agent filesystem boundary | — | **Not enforced.** Agents run with your user permissions and can read outside the worktree |
 | Network policy for agents/benchmarks | — | **Not enforced** (the Claude process necessarily reaches its API) |
-| Withheld-case secrecy | — | **Not yet implemented** (P1; will still be called "withheld", not "hidden") |
+| Withheld evaluator cases | kept in `.paxcli/withheld/` (gitignored → absent from worktrees); agents receive only failure categories | **Partial** — out of the loop, not process-isolated: a local agent could in principle read the directory. Called "withheld", never "hidden" |
+| Receipt redaction | secret scanning; reports/PRs use redacted variants only | Enforced (pattern-based — review before sharing highly sensitive repos) |
+| Reward-hack detectors | static diff analysis (skips, timing patches, lockfiles) | Enforced as one layer — detects and reduces, does not prevent all manipulation |
 
 ## Practical guidance
 

@@ -3,11 +3,15 @@ import path from 'node:path';
 import { BenchmarkHarness } from '../bench/harness.js';
 import { type Comparison, compare } from '../bench/stats.js';
 import { type PaxcliConfig, configHash } from '../config/schema.js';
+import { selectParent } from '../frontier/select.js';
 import { runGates } from '../gates/engine.js';
 import type { HostAdapter } from '../hosts/types.js';
+import { appendJournalRound } from '../insights/journal.js';
 import { buildAgentEnv } from '../policy/env.js';
+import { runDetectors } from '../proof/detectors.js';
 import { type PinSet, capturePins, verifyPins } from '../proof/pins.js';
 import { type Receipt, buildReceipt, writeReceipt } from '../proof/receipt.js';
+import { runWithheldChecks } from '../proof/withheld.js';
 import { EngineLock, EventStore } from '../tree/store.js';
 import {
   type ExperimentNode,
@@ -18,7 +22,8 @@ import {
 } from '../tree/types.js';
 import { runId as newRunId, shortId } from '../util/ids.js';
 import { WorktreeBackend, snapshotRepo, unexpectedMainRepoChanges } from '../worktree/local.js';
-import { buildExperimentPrompt, extractHypothesis } from './prompt.js';
+import { buildExperimentPrompt, buildResearchPrompt, extractHypothesis } from './prompt.js';
+import { readSteering } from './steering.js';
 
 export interface RunOptions {
   repoRoot: string;
@@ -156,20 +161,24 @@ export async function runOptimize(opts: RunOptions): Promise<RunOutcome> {
 
       const current = await store.replay();
       const best = pickBest(current.nodes, config);
-      const parentRef = best?.branch ?? snapshot.headSha;
       const bestScore = best?.score ?? null;
+      const steering = await readSteering(repoRoot);
+      if (steering) onStatus('User steering is active for this round');
 
+      const roundNodeIds: string[] = [];
       const parallel = Math.min(config.search.parallel, config.search.maxNodes - nodesTried);
       const experiments: Promise<void>[] = [];
       for (let k = 0; k < parallel; k++) {
+        const parent = selectParent(current.nodes, config);
         experiments.push(
           runOneExperiment({
             round,
-            parent: best,
-            parentRef,
+            parent,
+            parentRef: parent?.branch ?? snapshot.headSha,
             baseline,
             bestScore,
             insights: current.insights,
+            steering,
             pins,
             config,
             host,
@@ -184,6 +193,7 @@ export async function runOptimize(opts: RunOptions): Promise<RunOutcome> {
               totalCost += c;
             },
             onReceipt: (r) => receipts.push(r),
+            onNodeId: (nid) => roundNodeIds.push(nid),
           }),
         );
         nodesTried += 1;
@@ -191,6 +201,17 @@ export async function runOptimize(opts: RunOptions): Promise<RunOutcome> {
       await Promise.all(experiments);
 
       const after = await store.replay();
+      await appendJournalRound({
+        runDir: store.dir,
+        runId: id,
+        round,
+        roundNodes: roundNodeIds
+          .map((nid) => after.nodes.get(nid))
+          .filter((n): n is ExperimentNode => Boolean(n)),
+        best: pickBest(after.nodes, config),
+        baseline,
+        totalCostUsd: totalCost,
+      }).catch(() => {});
       const newBest = pickBest(after.nodes, config);
       const improved =
         newBest &&
@@ -214,8 +235,58 @@ export async function runOptimize(opts: RunOptions): Promise<RunOutcome> {
 
     if (signal.aborted) reason = 'interrupted';
 
-    const finalSummary = await store.replay();
-    const bestNode = pickBest(finalSummary.nodes, config);
+    let finalSummary = await store.replay();
+    let bestNode = pickBest(finalSummary.nodes, config);
+
+    // ---- Fresh-workspace reproduction of the winner -----------------------
+    if (bestNode?.commitSha && config.search.reproduceWinner && !signal.aborted) {
+      try {
+        const repro = await reproduceWinner({
+          backend,
+          config,
+          baseSha: snapshot.headSha,
+          winnerSha: bestNode.commitSha,
+          onStatus,
+        });
+        await store.append({
+          type: 'winner_reproduced',
+          nodeId: bestNode.id,
+          held: repro.held,
+          display: repro.comparison.display,
+        });
+        if (repro.held) {
+          await store.append({
+            type: 'node_updated',
+            nodeId: bestNode.id,
+            patch: { grade: 'reproduced' },
+          });
+          onStatus(`Fresh reproduction held: ${repro.comparison.display}`);
+        } else {
+          onStatus(
+            `Fresh reproduction did NOT hold (${repro.comparison.display}) — the result keeps its lower grade; treat it with suspicion`,
+          );
+        }
+        // Refresh the winner's receipt with the reproduction evidence.
+        const idx = receipts.findIndex((r) => r.nodeId === bestNode?.id);
+        if (idx >= 0) {
+          const updatedSummary = await store.replay();
+          const updatedNode = updatedSummary.nodes.get(bestNode.id);
+          const old = receipts[idx] as Receipt;
+          const refreshed: Receipt = {
+            ...old,
+            grade: updatedNode?.grade ?? old.grade,
+            reproduction: { held: repro.held, display: repro.comparison.display },
+          };
+          receipts[idx] = refreshed;
+          await writeReceipt(store.receiptsDir(), refreshed);
+        }
+      } catch (err) {
+        onStatus(`Reproduction step failed to run: ${(err as Error).message}`);
+      }
+    }
+
+    finalSummary = await store.replay();
+    bestNode = pickBest(finalSummary.nodes, config);
     if (signal.aborted) {
       await store.append({ type: 'run_interrupted', at: new Date().toISOString() });
     } else {
@@ -242,6 +313,47 @@ export async function runOptimize(opts: RunOptions): Promise<RunOutcome> {
   }
 }
 
+/**
+ * Fresh-workspace reproduction: re-measures the winner and a fresh baseline in
+ * brand-new worktrees, interleaved (B, W, B, W) so machine-load drift hits
+ * both sides equally. The improvement must still clear the noise-derived
+ * threshold for the grade to rise to 'reproduced'.
+ */
+export async function reproduceWinner(params: {
+  backend: WorktreeBackend;
+  config: PaxcliConfig;
+  baseSha: string;
+  winnerSha: string;
+  onStatus: (msg: string) => void;
+}): Promise<{ held: boolean; comparison: Comparison }> {
+  const { backend, config, baseSha, winnerSha, onStatus } = params;
+  onStatus('Reproducing the winner in a fresh workspace');
+  const baseWt = await backend.provision(`rb-${shortId(4)}`, baseSha);
+  const winWt = await backend.provision(`rw-${shortId(4)}`, winnerSha);
+  try {
+    const baseHarness = new BenchmarkHarness(config.benchmark, { cwd: baseWt.path, onStatus });
+    const winHarness = new BenchmarkHarness(config.benchmark, { cwd: winWt.path, onStatus });
+    const baseSamples: number[] = [];
+    const winSamples: number[] = [];
+    for (let pass = 0; pass < 2; pass++) {
+      baseSamples.push(
+        ...(await baseHarness.measure(`fresh baseline ${pass + 1}/2`)).score.samples,
+      );
+      winSamples.push(...(await winHarness.measure(`fresh winner ${pass + 1}/2`)).score.samples);
+    }
+    const comparison = compare(
+      baseSamples,
+      winSamples,
+      config.benchmark.direction,
+      config.search.minImprovementPct,
+    );
+    return { held: comparison.meaningful, comparison };
+  } finally {
+    await baseWt.destroy({ keepBranch: false });
+    await winWt.destroy({ keepBranch: false });
+  }
+}
+
 function pickBest(nodes: Map<string, ExperimentNode>, config: PaxcliConfig): ExperimentNode | null {
   let best: ExperimentNode | null = null;
   for (const node of nodes.values()) {
@@ -264,6 +376,7 @@ interface ExperimentContext {
   baseline: Score;
   bestScore: Score | null;
   insights: Insight[];
+  steering: string | null;
   pins: PinSet;
   config: PaxcliConfig;
   host: HostAdapter;
@@ -276,6 +389,7 @@ interface ExperimentContext {
   onStatus: (msg: string) => void;
   onCost: (costUsd: number) => void;
   onReceipt: (r: Receipt) => void;
+  onNodeId: (nodeId: string) => void;
 }
 
 async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
@@ -299,6 +413,7 @@ async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
     finishedAt: null,
   };
 
+  ctx.onNodeId(nodeId);
   const wt = await ctx.backend.provision(nodeId, ctx.parentRef);
   node.branch = wt.branch;
   await store.append({ type: 'node_created', node });
@@ -315,14 +430,46 @@ async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
   let comparison: Comparison | null = null;
   let pinsVerified = true;
   let keepBranch = false;
+  const risks: string[] = [];
+  let withheldOutcome: Receipt['withheld'] = null;
 
   try {
     await update({ status: 'running' });
+
+    // Split roles: a researcher proposes the plan; the executor implements it.
+    let plan: string | null = null;
+    if (config.search.roles === 'split') {
+      onStatus('Researcher agent analyzing the codebase');
+      const research = await ctx.host.spawnAgent({
+        prompt: buildResearchPrompt({
+          config,
+          baseline: ctx.baseline,
+          bestSoFar: ctx.bestScore,
+          insights: ctx.insights,
+          steering: ctx.steering,
+        }),
+        cwd: wt.path,
+        timeoutMs: config.budget.perAgentTimeoutMs,
+        signal: ctx.signal,
+        env: buildAgentEnv(config.policy),
+        logPath: path.join(traceDir, 'researcher.jsonl'),
+        onStatus,
+        ...(config.host.model ? { model: config.host.model } : {}),
+      });
+      if (research.costUsd) {
+        ctx.onCost(research.costUsd);
+        await store.append({ type: 'cost_recorded', nodeId, costUsd: research.costUsd });
+      }
+      if (research.ok && research.finalText.trim()) plan = research.finalText.trim();
+    }
+
     const prompt = buildExperimentPrompt({
       config,
       baseline: ctx.baseline,
       bestSoFar: ctx.bestScore,
       insights: ctx.insights,
+      steering: ctx.steering,
+      plan,
     });
 
     const agentResult = await ctx.host.spawnAgent({
@@ -378,6 +525,19 @@ async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
       return;
     }
 
+    // 1b. Static reward-hack detectors over the diff.
+    const findings = runDetectors(await wt.diff(), {
+      allowDependencyChanges: config.policy.allowDependencyChanges,
+    });
+    const detectorViolation = findings.find((f) => f.severity === 'violation');
+    if (detectorViolation) {
+      await reject(`Detector "${detectorViolation.detector}": ${detectorViolation.detail}`);
+      return;
+    }
+    for (const f of findings) {
+      if (f.severity === 'suspicion') risks.push(`${f.detector}: ${f.detail}`);
+    }
+
     // 2. Benchmark.
     const harness = new BenchmarkHarness(config.benchmark, { cwd: wt.path, onStatus });
     let measure: Awaited<ReturnType<BenchmarkHarness['measure']>>;
@@ -424,6 +584,23 @@ async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
       return;
     }
 
+    // 4b. Withheld evaluator cases: behavior checks whose inputs live outside
+    // the worktree. Agents only ever learn the failure category.
+    if (config.withheld) onStatus('Running withheld behavior checks');
+    const withheld = await runWithheldChecks(
+      ctx.repoRoot,
+      wt.path,
+      config.withheld?.cmd,
+      config.withheld?.timeoutMs ?? 300_000,
+    );
+    withheldOutcome = withheld.configured
+      ? { configured: true, pass: withheld.pass, category: withheld.category }
+      : null;
+    if (withheld.configured && !withheld.pass) {
+      await reject(`Withheld behavior check failed (category: ${withheld.category})`);
+      return;
+    }
+
     // 5. The improvement must clear the noise floor.
     const target = ctx.bestScore ?? ctx.baseline;
     const beatsTarget = betterThan(measure.score.value, target.value, config.benchmark.direction);
@@ -434,10 +611,14 @@ async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
       return;
     }
 
-    // Accepted.
+    // Accepted. Grade ladder: measured → validated (stable stats) →
+    // equivalent (withheld behavior checks also passed). 'reproduced' is
+    // granted later by the fresh-workspace step.
     const sha = await wt.commit(`paxcli: ${node.hypothesis}\n\nExperiment ${nodeId}`);
     keepBranch = true;
-    const grade = measure.stability.ok ? 'validated' : 'measured';
+    const validated = measure.stability.ok;
+    const grade =
+      validated && withheldOutcome?.pass ? 'equivalent' : validated ? 'validated' : 'measured';
     const pct = improvementPct(measure.score.value, ctx.baseline.value, config.benchmark.direction);
     await update({
       status: 'accepted',
@@ -462,6 +643,8 @@ async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
       comparison,
       pinsVerified,
       configHash: ctx.cfgHash,
+      risks,
+      withheld: withheldOutcome,
     });
     await writeReceipt(store.receiptsDir(), receipt);
     ctx.onReceipt(receipt);

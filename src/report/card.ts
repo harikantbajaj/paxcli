@@ -21,10 +21,27 @@ export function renderVerificationCard(receipt: Receipt): string {
       gate.pass ? pass('passed') : fail(`failed (exit ${gate.exitCode ?? '?'})`),
     ]);
   }
+  if (receipt.withheld?.configured) {
+    rows.push([
+      'Withheld checks',
+      receipt.withheld.pass ? pass('passed') : fail(`failed (${receipt.withheld.category})`),
+    ]);
+  }
+  if (receipt.reproduction) {
+    rows.push([
+      'Fresh reproduction',
+      receipt.reproduction.held
+        ? pass(`held (${receipt.reproduction.display})`)
+        : fail(`did not hold (${receipt.reproduction.display})`),
+    ]);
+  }
   rows.push([
     'Files protected',
     receipt.pinsVerified ? pass('integrity verified') : fail('PIN VIOLATION'),
   ]);
+  if (receipt.risks.length > 0) {
+    rows.push(['Remaining risk', receipt.risks.join(' · ')]);
+  }
   if (receipt.agent) {
     const cost = receipt.agent.costUsd != null ? `$${receipt.agent.costUsd.toFixed(2)}` : 'n/a';
     rows.push(['Cost to find', `${cost} · ${formatDuration(receipt.agent.durationMs)}`]);
