@@ -149,7 +149,15 @@ export function bootstrapCI(
     }
     const idx = 0.5 * (n - 1);
     const lo = Math.floor(idx);
-    return { n, sortedVals, rankOf, counts: new Uint32Array(n), lo, hi: Math.ceil(idx), frac: idx - lo };
+    return {
+      n,
+      sortedVals,
+      rankOf,
+      counts: new Uint32Array(n),
+      lo,
+      hi: Math.ceil(idx),
+      frac: idx - lo,
+    };
   };
   const resampleMedian = (s: ReturnType<typeof prepare>): number => {
     const { n, sortedVals, rankOf, counts } = s;
