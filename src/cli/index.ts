@@ -21,9 +21,9 @@ const program = new Command();
 
 // The version always comes from package.json (shipped one level above dist/),
 // so the CLI can never report a stale number again.
-const pkg = JSON.parse(
-  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-) as { version: string };
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+  version: string;
+};
 
 program
   .name('paxcli')
