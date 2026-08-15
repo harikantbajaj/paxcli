@@ -92,6 +92,31 @@ describe('EventStore', () => {
     await expect(store.replay()).rejects.toThrow(/sequence gap/);
   });
 
+  it('survives many concurrent appends (parallel experiments)', async () => {
+    const store = await EventStore.create(root, 'r6');
+    await Promise.all(
+      Array.from({ length: 50 }, (_, i) => store.append({ type: 'round_started', round: i + 1 })),
+    );
+    const summary = await store.replay();
+    expect(summary.round).toBeGreaterThan(0);
+    const reopened = await EventStore.open(root, 'r6');
+    const envelopes = await reopened.readAll();
+    expect(envelopes.length).toBe(50);
+    expect(envelopes.map((e) => e.seq)).toEqual(Array.from({ length: 50 }, (_, i) => i + 1));
+  });
+
+  it('tolerates adjacent events written in swapped file order', async () => {
+    const store = await EventStore.create(root, 'r7');
+    await writeFile(
+      store.eventsPath,
+      '{"v":1,"seq":2,"at":"x","event":{"type":"round_started","round":2}}\n' +
+        '{"v":1,"seq":1,"at":"x","event":{"type":"round_started","round":1}}\n',
+      'utf8',
+    );
+    const summary = await store.replay();
+    expect(summary.round).toBe(2);
+  });
+
   it('resumes sequence numbering after reopen', async () => {
     const store = await EventStore.create(root, 'r5');
     await store.append({ type: 'round_started', round: 1 });

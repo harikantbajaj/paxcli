@@ -29,6 +29,9 @@ export function runDir(repoRoot: string, id: string): string {
 export class EventStore {
   private seq = 0;
   private listeners = new Set<(e: EventEnvelope) => void>();
+  /** Serializes appendFile calls — parallel experiments append concurrently,
+   * and unserialized writes can land in the file out of sequence order. */
+  private writeChain: Promise<unknown> = Promise.resolve();
   readonly eventsPath: string;
 
   private constructor(readonly dir: string) {
@@ -75,7 +78,11 @@ export class EventStore {
       at: new Date().toISOString(),
       event,
     };
-    await appendFile(this.eventsPath, `${JSON.stringify(envelope)}\n`, 'utf8');
+    const write = this.writeChain.then(() =>
+      appendFile(this.eventsPath, `${JSON.stringify(envelope)}\n`, 'utf8'),
+    );
+    this.writeChain = write.catch(() => {});
+    await write;
     for (const fn of this.listeners) fn(envelope);
     return envelope;
   }
@@ -99,6 +106,9 @@ export class EventStore {
         );
       }
     }
+    // Logs written before appends were serialized may hold adjacent events in
+    // swapped file order; sequence numbers are authoritative, file order is not.
+    envelopes.sort((a, b) => a.seq - b.seq);
     let prev = 0;
     for (const env of envelopes) {
       if (env.seq !== prev + 1) {
