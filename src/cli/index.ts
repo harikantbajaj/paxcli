@@ -49,7 +49,7 @@ program
 program
   .command('start')
   .description('Guided run on this repository: checks, permissions, then optimize')
-  .option('--preset <name>', 'quick | balanced | deep', 'quick')
+  .option('--preset <name>', 'quick | balanced | deep (omit to use your config values as-is)')
   .option('--host <id>', 'claude-code | codex | mock', 'claude-code')
   .option('--budget <usd>', 'maximum agent spend in USD')
   .option('--parallel <n>', 'parallel experiments per round')
@@ -64,7 +64,7 @@ program
 program
   .command('resume')
   .description('Continue the most recent interrupted run')
-  .option('--host <id>', 'claude-code | mock', 'claude-code')
+  .option('--host <id>', 'claude-code | codex | mock', 'claude-code')
   .option('--json', 'machine-readable output on stdout')
   .action(async (opts: { json?: boolean; host: string }) => {
     const out = new Output(Boolean(opts.json));
@@ -448,9 +448,12 @@ bench
       }
       const { discover } = await import('../discovery/scan.js');
       const findings = await discover(repoRoot, writable);
+      out.info(
+        pc.dim(`Scanned files matching: ${writable.join(', ')} (your config's policy.writable)`),
+      );
       if (findings.length === 0) {
         out.info(
-          'No common performance smells found by static scanning. A benchmark tells the real story.',
+          'No common performance smells found in that scope. Widen policy.writable to scan more — and remember: static heuristics only suggest, the benchmark tells the real story.',
         );
       } else {
         out.info(pc.bold(`Found ${findings.length} candidate(s), strongest signal first:\n`));
@@ -658,8 +661,9 @@ async function startCommand(repoRoot: string, opts: StartOpts, out: Output): Pro
   const configPath = path.join(repoRoot, CONFIG_FILENAME);
   if (!existsSync(configPath)) {
     await writeConfigTemplate(configPath);
+    out.info(`Created ${pc.cyan(CONFIG_FILENAME)} — a template to fill in.`);
     out.info(
-      `Created ${pc.cyan(CONFIG_FILENAME)} — a template with comments in docs/quickstart.md.`,
+      'Guide with examples: https://github.com/harikantbajaj/paxcli/blob/main/docs/quickstart.md',
     );
     out.info(
       'Fill in your benchmark command and gates, commit the file, then run `paxcli start` again.',
@@ -669,11 +673,13 @@ async function startCommand(repoRoot: string, opts: StartOpts, out: Output): Pro
   }
 
   let config = parseConfig(await readFile(configPath, 'utf8'));
-  const preset = (opts.preset ?? 'quick') as PresetName;
-  if (!['quick', 'balanced', 'deep'].includes(preset)) {
-    throw new Error(`Unknown preset "${preset}". Use quick, balanced, or deep.`);
+  const preset = opts.preset as PresetName | undefined;
+  if (preset !== undefined) {
+    if (!['quick', 'balanced', 'deep'].includes(preset)) {
+      throw new Error(`Unknown preset "${preset}". Use quick, balanced, or deep.`);
+    }
+    config = applyPreset(config, preset);
   }
-  config = applyPreset(config, preset);
   if (opts.budget)
     config = { ...config, budget: { ...config.budget, maxCostUsd: Number(opts.budget) } };
   if (opts.parallel)
@@ -683,7 +689,9 @@ async function startCommand(repoRoot: string, opts: StartOpts, out: Output): Pro
   const host = await createHostAdapter(hostId, opts.mockPatches);
 
   out.info(
-    `Preset ${pc.bold(preset)}: up to ${config.search.maxNodes} experiments across ${config.search.maxRounds} round(s), ${config.search.parallel} in parallel, budget $${config.budget.maxCostUsd.toFixed(2)} (the budget is checked before each spawn; spend can overshoot by up to ${config.search.parallel} in-flight agent call${config.search.parallel > 1 ? 's' : ''}).`,
+    `${preset ? `Preset ${pc.bold(preset)} (overrides your config's search/budget)` : 'Using your config settings'}: ` +
+      `up to ${config.search.maxNodes} experiments across ${config.search.maxRounds} round(s), ${config.search.parallel} in parallel, budget $${config.budget.maxCostUsd.toFixed(2)} ` +
+      `(the budget is checked before each spawn; spend can overshoot by up to ${config.search.parallel} in-flight agent call${config.search.parallel > 1 ? 's' : ''}).`,
   );
 
   const outcome = await runOptimizeWithUi({ repoRoot, config, host, out });

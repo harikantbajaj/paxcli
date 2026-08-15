@@ -24,6 +24,19 @@ export async function runDemo(out: Output): Promise<RunOutcome> {
   const demoSrc = path.join(examplesDir, 'demo-api');
   const patchesFile = path.join(examplesDir, 'demo-patches.json');
 
+  // Best-effort cleanup of previous demo directories so repeated demos don't
+  // accumulate in the temp folder. The current run's directory is kept.
+  try {
+    const { readdir, rm } = await import('node:fs/promises');
+    for (const entry of await readdir(tmpdir())) {
+      if (entry.startsWith('paxcli-demo-')) {
+        await rm(path.join(tmpdir(), entry), { recursive: true, force: true }).catch(() => {});
+      }
+    }
+  } catch {
+    // never let cleanup block the demo
+  }
+
   const workDir = path.join(tmpdir(), `paxcli-demo-${shortId(6)}`);
   await mkdir(workDir, { recursive: true });
   await cp(demoSrc, workDir, { recursive: true });

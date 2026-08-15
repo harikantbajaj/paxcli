@@ -54,15 +54,21 @@ export class BenchmarkHarness {
         env.PORT = String(port);
         env.TARGET_URL = `http://127.0.0.1:${port}`;
         status(`Starting application on port ${port}`);
+        const outputTail = new OutputTail();
         server = execa(this.config.server.startCmd, {
           cwd: this.opts.cwd,
           env,
           shell: true,
-          stdio: 'ignore',
+          buffer: false,
+          stdin: 'ignore',
+          stdout: 'pipe',
+          stderr: 'pipe',
           detached: false,
         });
         server.catch(() => {});
-        await this.waitReady(port, server);
+        server.stdout?.on('data', (c: Buffer) => outputTail.push(c));
+        server.stderr?.on('data', (c: Buffer) => outputTail.push(c));
+        await this.waitReady(port, server, outputTail);
       }
 
       status(`Warming up (${this.config.warmupSamples} rounds)`);
@@ -142,14 +148,20 @@ export class BenchmarkHarness {
     return String(stdout);
   }
 
-  private async waitReady(port: number, server: ResultPromise): Promise<void> {
+  private async waitReady(port: number, server: ResultPromise, tail: OutputTail): Promise<void> {
     const cfg = this.config.server;
     if (!cfg) return;
     const url = cfg.readyUrl.replace('{port}', String(port));
     const deadline = Date.now() + cfg.readyTimeoutMs;
     while (Date.now() < deadline) {
       if (server.exitCode !== undefined && server.exitCode !== null) {
-        throw new Error(`Application exited with code ${server.exitCode} before becoming ready`);
+        // Windows reports negative exit codes as large unsigned ints; show the
+        // signed value people can actually search for.
+        const signed =
+          server.exitCode > 0x7fffffff ? server.exitCode - 0x100000000 : server.exitCode;
+        throw new Error(
+          `Your server.startCmd (\`${cfg.startCmd}\`) exited with code ${signed} before becoming ready.\nCheck that the command works when run manually and that your app listens on the PORT env var.\nApplication output:\n${tail.text() || '  (no output captured)'}`,
+        );
       }
       try {
         const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
@@ -159,7 +171,24 @@ export class BenchmarkHarness {
       }
       await sleep(300);
     }
-    throw new Error(`Application never became ready at ${url} within ${cfg.readyTimeoutMs}ms`);
+    throw new Error(
+      `Application never became ready at ${url} within ${cfg.readyTimeoutMs}ms.\nCheck that your app listens on the PORT env var and serves the readiness URL.\nApplication output:\n${tail.text() || '  (no output captured)'}`,
+    );
+  }
+}
+
+/** Keeps the last ~2KB of a process's combined output for diagnostics. */
+class OutputTail {
+  private buf = '';
+  push(chunk: Buffer): void {
+    this.buf = (this.buf + chunk.toString('utf8')).slice(-2048);
+  }
+  text(): string {
+    return this.buf
+      .trim()
+      .split('\n')
+      .map((l) => `  ${l}`)
+      .join('\n');
   }
 }
 

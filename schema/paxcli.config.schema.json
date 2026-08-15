@@ -1,0 +1,342 @@
+{
+  "$ref": "#/definitions/PaxcliConfig",
+  "definitions": {
+    "PaxcliConfig": {
+      "type": "object",
+      "properties": {
+        "$schema": {
+          "type": "string"
+        },
+        "version": {
+          "type": "number",
+          "const": 1,
+          "default": 1
+        },
+        "benchmark": {
+          "type": "object",
+          "properties": {
+            "sampleCmd": {
+              "type": "string",
+              "minLength": 1
+            },
+            "server": {
+              "type": "object",
+              "properties": {
+                "startCmd": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "readyUrl": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "readyTimeoutMs": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "default": 30000
+                }
+              },
+              "required": [
+                "startCmd",
+                "readyUrl"
+              ],
+              "additionalProperties": false
+            },
+            "setupCmd": {
+              "type": "string"
+            },
+            "resetCmd": {
+              "type": "string"
+            },
+            "metric": {
+              "type": "string",
+              "minLength": 1
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "minimize",
+                "maximize"
+              ]
+            },
+            "warmupSamples": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 2
+            },
+            "samples": {
+              "type": "integer",
+              "minimum": 3,
+              "default": 8
+            },
+            "sampleTimeoutMs": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 120000
+            },
+            "maxNoisePct": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "default": 10
+            }
+          },
+          "required": [
+            "sampleCmd",
+            "metric",
+            "direction"
+          ],
+          "additionalProperties": false
+        },
+        "gates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cmd": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 300000
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "tests",
+                  "invariant",
+                  "equivalence",
+                  "custom"
+                ],
+                "default": "custom"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "cmd"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "metric": {
+                "type": "string",
+                "minLength": 1
+              },
+              "maxIncreasePct": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "metric",
+              "maxIncreasePct"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "policy": {
+          "type": "object",
+          "properties": {
+            "level": {
+              "type": "string",
+              "enum": [
+                "sandboxed",
+                "standard",
+                "trusted"
+              ],
+              "default": "standard"
+            },
+            "writable": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "src/**"
+              ]
+            },
+            "protected": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "paxcli.config.json",
+                "test/**",
+                "tests/**",
+                ".github/**"
+              ]
+            },
+            "envAllowlist": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "PATH",
+                "HOME",
+                "USERPROFILE",
+                "TEMP",
+                "TMP",
+                "SYSTEMROOT",
+                "COMSPEC",
+                "NODE_OPTIONS"
+              ]
+            },
+            "allowDependencyChanges": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "withheld": {
+          "type": "object",
+          "properties": {
+            "cmd": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 300000
+            }
+          },
+          "required": [
+            "cmd"
+          ],
+          "additionalProperties": false
+        },
+        "search": {
+          "type": "object",
+          "properties": {
+            "maxRounds": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 3
+            },
+            "parallel": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8,
+              "default": 2
+            },
+            "maxNodes": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 12
+            },
+            "plateauRounds": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 2
+            },
+            "minImprovementPct": {
+              "type": "number",
+              "minimum": 0,
+              "default": 1
+            },
+            "strategy": {
+              "type": "string",
+              "enum": [
+                "best-first",
+                "epsilon-greedy"
+              ],
+              "default": "best-first"
+            },
+            "epsilon": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.2
+            },
+            "roles": {
+              "type": "string",
+              "enum": [
+                "single",
+                "split"
+              ],
+              "default": "single"
+            },
+            "reproduceWinner": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "maxCostUsd": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "default": 5
+            },
+            "maxWallClockMs": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 3600000
+            },
+            "perAgentTimeoutMs": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 900000
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "host": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "enum": [
+                "claude-code",
+                "codex",
+                "mock"
+              ],
+              "default": "claude-code"
+            },
+            "model": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        }
+      },
+      "required": [
+        "benchmark"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "paxcli.config.json",
+  "description": "Configuration for paxcli — verified autonomous code optimization. Docs: https://github.com/harikantbajaj/paxcli/blob/main/docs/quickstart.md"
+}

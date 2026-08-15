@@ -1,6 +1,6 @@
 {
   "name": "paxcli",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Verified autonomous code optimization. Coding agents find performance improvements; Paxcli produces proof that each one is real, safe, and reproducible.",
   "type": "module",
   "license": "Apache-2.0",
@@ -43,6 +43,7 @@
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
     "check": "npm run typecheck && npm run lint && npm run test",
+    "schema": "node scripts/gen-schema.mjs",
     "prepublishOnly": "npm run check && npm run build"
   },
   "keywords": [
@@ -69,6 +70,7 @@
     "fastify": "^5.0.0",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "zod-to-json-schema": "^3.25.2"
   }
 }
