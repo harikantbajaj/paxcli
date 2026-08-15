@@ -1,0 +1,7 @@
+{
+  "name": "paxcli-demo-api",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Deliberately slow HTTP API used by `paxcli demo`. No dependencies."
+}

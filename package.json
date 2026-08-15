@@ -1,0 +1,63 @@
+{
+  "name": "paxcli",
+  "version": "0.1.0",
+  "description": "Verified autonomous code optimization. Coding agents find performance improvements; Paxcli produces proof that each one is real, safe, and reproducible.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "paxcli": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "examples/demo-api",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src",
+    "lint:fix": "biome check --write src",
+    "check": "npm run typecheck && npm run lint && npm run test"
+  },
+  "keywords": [
+    "performance",
+    "optimization",
+    "ai-agents",
+    "claude-code",
+    "benchmarking",
+    "verification",
+    "autonomous",
+    "cli"
+  ],
+  "dependencies": {
+    "@clack/prompts": "^0.11.0",
+    "commander": "^14.0.0",
+    "execa": "^9.5.0",
+    "picocolors": "^1.1.0",
+    "tinyglobby": "^0.2.17",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^24.0.0",
+    "fastify": "^5.0.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

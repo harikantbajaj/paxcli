@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.paxcli/
+*.log
+.DS_Store
+coverage/
+.tsbuildinfo
+examples/demo-api/node_modules/
+.npm-cache/
