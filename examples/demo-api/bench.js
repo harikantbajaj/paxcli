@@ -6,7 +6,7 @@ if (!target) {
   process.exit(1);
 }
 
-const REQUESTS = 12;
+const REQUESTS = 24;
 const times = [];
 for (let i = 0; i < REQUESTS; i++) {
   const started = performance.now();

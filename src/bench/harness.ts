@@ -105,7 +105,7 @@ export class BenchmarkHarness {
           samples: values,
           secondary: secondaryMedians,
         },
-        stability: assessStability(values),
+        stability: assessStability(values, this.config.maxNoisePct),
         secondaryMedians,
       };
     } finally {

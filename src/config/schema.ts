@@ -45,6 +45,12 @@ export const benchmarkSchema = z.object({
   /** Samples per measurement pass. p95 is refused below 20 observations. */
   samples: z.number().int().min(3).default(8),
   sampleTimeoutMs: z.number().int().positive().default(120_000),
+  /**
+   * Maximum baseline noise (coefficient of variation, %) before the run
+   * refuses to optimize. Raise only on known-noisy hardware (shared CI);
+   * the acceptance threshold still scales with the noise actually measured.
+   */
+  maxNoisePct: z.number().positive().default(10),
 });
 
 export const constraintSchema = z.object({

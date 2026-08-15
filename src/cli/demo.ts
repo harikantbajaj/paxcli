@@ -39,8 +39,12 @@ export async function runDemo(out: Output): Promise<RunOutcome> {
       server: { startCmd: 'node server.js', readyUrl: 'http://127.0.0.1:{port}/health' },
       metric: 'report_latency_ms',
       direction: 'minimize',
-      warmupSamples: 1,
-      samples: 5,
+      warmupSamples: 2,
+      samples: 6,
+      // The demo runs on arbitrary laptops and shared CI runners; a looser
+      // refusal limit keeps it runnable there. The acceptance threshold still
+      // scales with the noise actually measured, so the story stays honest.
+      maxNoisePct: 20,
     },
     gates: [
       { id: 'tests', name: 'unit tests', cmd: 'node test.js', kind: 'tests' },

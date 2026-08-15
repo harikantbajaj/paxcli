@@ -98,7 +98,15 @@ export async function runOptimize(opts: RunOptions): Promise<RunOutcome> {
           cwd: baseWt.path,
           onStatus,
         });
-        const result = await harness.measure('baseline');
+        let result = await harness.measure('baseline');
+        if (!result.stability.ok) {
+          // Transient machine load (especially on shared CI runners) can spike
+          // one pass; one fresh re-measure is honest, silencing the check is not.
+          onStatus(
+            `Baseline was noisy (±${result.stability.cvPct.toFixed(1)}%) — re-measuring once`,
+          );
+          result = await harness.measure('baseline retry');
+        }
         if (!result.stability.ok) {
           throw new Error(
             `Baseline benchmark is not reliable enough to optimize against:\n  - ${result.stability.problems.join('\n  - ')}\nFix the benchmark first (more samples, less noise), then retry.`,
