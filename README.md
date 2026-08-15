@@ -1,5 +1,9 @@
 # Paxcli
 
+[![npm version](https://img.shields.io/npm/v/paxcli)](https://www.npmjs.com/package/paxcli)
+[![CI](https://github.com/harikantbajaj/paxcli/actions/workflows/ci.yml/badge.svg)](https://github.com/harikantbajaj/paxcli/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 **Verified autonomous code optimization.** Coding agents find performance improvements in your codebase — Paxcli produces proof that each improvement is real, safe, and reproducible.
 
 > Paxcli does not ask you to trust an agent's claim that code is better. It produces a reproducible receipt showing what improved, by how much, under which checks, and whether the result held.
