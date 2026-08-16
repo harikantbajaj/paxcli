@@ -5,20 +5,23 @@ import { type Comparison, compare } from '../bench/stats.js';
 import { type PaxcliConfig, configHash } from '../config/schema.js';
 import { selectParent } from '../frontier/select.js';
 import { runGates } from '../gates/engine.js';
+import { ensureHostAvailable } from '../hosts/detect.js';
 import type { HostAdapter } from '../hosts/types.js';
 import { appendJournalRound } from '../insights/journal.js';
 import { buildAgentEnv } from '../policy/env.js';
-import { runDetectors } from '../proof/detectors.js';
-import { type PinSet, capturePins, verifyPins } from '../proof/pins.js';
+import { type PinSet, capturePins } from '../proof/pins.js';
 import { type Receipt, buildReceipt, writeReceipt } from '../proof/receipt.js';
+import { screenCandidate } from '../proof/verify.js';
 import { runWithheldChecks } from '../proof/withheld.js';
-import { EngineLock, EventStore } from '../tree/store.js';
+import { EngineLock, EventStore, appendTerminalEvent } from '../tree/store.js';
 import {
   type ExperimentNode,
   type Insight,
   type Score,
+  agentRunSummary,
   betterThan,
   improvementPct,
+  newExperimentNode,
 } from '../tree/types.js';
 import { runId as newRunId, shortId } from '../util/ids.js';
 import { WorktreeBackend, snapshotRepo, unexpectedMainRepoChanges } from '../worktree/local.js';
@@ -60,8 +63,7 @@ export async function runOptimize(opts: RunOptions): Promise<RunOutcome> {
   const cfgHash = configHash(config);
   const backend = new WorktreeBackend(repoRoot);
 
-  const detection = await host.detect();
-  if (!detection.found) throw new Error(detection.problem ?? `Host "${host.id}" not available`);
+  await ensureHostAvailable(host);
 
   const snapshot = await snapshotRepo(repoRoot);
   const id = opts.resumeRunId ?? newRunId();
@@ -175,6 +177,7 @@ export async function runOptimize(opts: RunOptions): Promise<RunOutcome> {
         const parent = selectParent(current.nodes, config);
         experiments.push(
           runOneExperiment({
+            runId: id,
             round,
             parent,
             parentRef: parent?.branch ?? snapshot.headSha,
@@ -290,16 +293,11 @@ export async function runOptimize(opts: RunOptions): Promise<RunOutcome> {
 
     finalSummary = await store.replay();
     bestNode = pickBest(finalSummary.nodes, config);
-    if (signal.aborted) {
-      await store.append({ type: 'run_interrupted', at: new Date().toISOString() });
-    } else {
-      await store.append({
-        type: 'run_finished',
-        reason,
-        bestNodeId: bestNode?.id ?? null,
-        finishedAt: new Date().toISOString(),
-      });
-    }
+    await appendTerminalEvent(store, {
+      aborted: signal.aborted,
+      reason,
+      bestNodeId: bestNode?.id ?? null,
+    });
 
     return {
       runId: id,
@@ -373,6 +371,7 @@ function pickBest(nodes: Map<string, ExperimentNode>, config: PaxcliConfig): Exp
 }
 
 interface ExperimentContext {
+  runId: string;
   round: number;
   parent: ExperimentNode | null;
   parentRef: string;
@@ -398,23 +397,7 @@ interface ExperimentContext {
 async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
   const { config, store, onStatus } = ctx;
   const nodeId = shortId(8);
-  const now = new Date().toISOString();
-  const node: ExperimentNode = {
-    id: nodeId,
-    parentId: ctx.parent?.id ?? null,
-    depth: (ctx.parent?.depth ?? 0) + 1,
-    branch: '',
-    commitSha: null,
-    hypothesis: '',
-    status: 'pending',
-    score: null,
-    grade: null,
-    gateResults: [],
-    agentRun: null,
-    decisionReason: null,
-    createdAt: now,
-    finishedAt: null,
-  };
+  const node = newExperimentNode({ id: nodeId, parent: ctx.parent });
 
   ctx.onNodeId(nodeId);
   const wt = await ctx.backend.provision(nodeId, ctx.parentRef);
@@ -492,15 +475,7 @@ async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
     }
     await update({
       hypothesis: extractHypothesis(agentResult.finalText),
-      agentRun: {
-        hostId: ctx.host.id,
-        model: config.host.model ?? null,
-        costUsd: agentResult.costUsd,
-        tokensIn: agentResult.tokensIn,
-        tokensOut: agentResult.tokensOut,
-        durationMs: agentResult.durationMs,
-        exitReason: agentResult.exitReason,
-      },
+      agentRun: agentRunSummary(ctx.host.id, config.host.model ?? null, agentResult),
     });
 
     if (!agentResult.ok) {
@@ -511,35 +486,28 @@ async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
     onStatus(`Evaluating: ${node.hypothesis}`);
     await update({ status: 'evaluating' });
 
-    // 1. Integrity pins — checked BEFORE any score exists.
-    const violations = await verifyPins(wt.path, ctx.pins);
-    if (violations.length > 0) {
+    // 1. Shared screening: pins → change check → detectors, before any score.
+    const screen = await screenCandidate({
+      worktree: wt,
+      pins: ctx.pins,
+      allowDependencyChanges: config.policy.allowDependencyChanges,
+    });
+    if (screen.verdict === 'pin-violation') {
       pinsVerified = false;
-      const list = violations.map((v) => `${v.file} (${v.kind})`).join(', ');
       await reject(
-        `Modified protected file(s): ${list}. This is auto-rejected regardless of score.`,
+        `Modified protected file(s): ${screen.files}. This is auto-rejected regardless of score.`,
       );
       return;
     }
-
-    const changed = await wt.changedFiles();
-    if (changed.length === 0) {
+    if (screen.verdict === 'no-changes') {
       await reject('Agent made no code changes');
       return;
     }
-
-    // 1b. Static reward-hack detectors over the diff.
-    const findings = runDetectors(await wt.diff(), {
-      allowDependencyChanges: config.policy.allowDependencyChanges,
-    });
-    const detectorViolation = findings.find((f) => f.severity === 'violation');
-    if (detectorViolation) {
-      await reject(`Detector "${detectorViolation.detector}": ${detectorViolation.detail}`);
+    if (screen.verdict === 'detector-violation') {
+      await reject(`Detector "${screen.detector}": ${screen.detail}`);
       return;
     }
-    for (const f of findings) {
-      if (f.severity === 'suspicion') risks.push(`${f.detector}: ${f.detail}`);
-    }
+    risks.push(...screen.suspicions);
 
     // 2. Benchmark.
     const harness = new BenchmarkHarness(config.benchmark, { cwd: wt.path, onStatus });
@@ -639,7 +607,7 @@ async function runOneExperiment(ctx: ExperimentContext): Promise<void> {
     });
   } finally {
     const receipt = buildReceipt({
-      runId: ctx.store.dir.split(/[\\/]/).at(-1) ?? '',
+      runId: ctx.runId,
       node,
       baseSha: ctx.baseSha,
       baseline: ctx.baseline,

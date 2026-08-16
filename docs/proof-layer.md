@@ -37,6 +37,17 @@ The evaluator is deterministic engine code. **No agent decides whether work is a
 
 Every experiment — accepted or rejected — writes a receipt (`.paxcli/runs/<run>/receipts/<node>.json`): commits, hypothesis, agent cost/tokens, samples, gate outputs, pin status, environment, decision reason, and the exact reproduce command. `paxcli run explain <id>` renders it.
 
+## The Proof Ledger
+
+Receipts live under gitignored `.paxcli/`; the **Proof Ledger** (`PROOF.md`, configurable via `ledger.path`) is the repo-visible, committable projection of them. When you apply a result, paxcli appends an entry: a markdown verification card plus an embedded machine-readable JSON block (`ledgerEntryVersion: 1`, validated by a zod schema, always built from the *redacted* receipt — raw gate output and agent text never reach it).
+
+Properties worth trusting:
+
+- **Append-only and idempotent.** Entries are keyed by run/experiment id; re-applying the same winner never duplicates an entry.
+- **Self-verifying.** `paxcli ledger verify` re-parses every embedded receipt, recomputes the stats header, and flags duplicates or tampering (exit 1). Commits referenced by entries that no longer exist locally (gc, rebase, shallow clone) are reported as warnings, not errors.
+- **Honest by construction.** The entry schema only allows the verified vocabulary on benchmark-backed optimization entries. Task entries are constrained to `"checks passed"` or `"applied — not verified by paxcli"` — there is no field in which to overclaim.
+- **Never load-bearing.** Ledger writes are unstaged, best-effort, and cannot fail a run or an apply.
+
 ## Honest limitations
 
 Paxcli **detects and reduces** common reward-hacking techniques. It does not prevent all of them. Examples that pins and gates do *not* currently catch:

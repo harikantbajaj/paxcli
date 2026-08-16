@@ -115,6 +115,55 @@ export interface RunSummary {
   finishReason: string | null;
   bestNodeId: string | null;
   round: number;
+  /** Fresh-workspace reproduction of the winner, when performed. */
+  reproduction: { nodeId: string; held: boolean; display: string } | null;
+}
+
+/** Fresh node with every field at its pre-run default — shared by both engines. */
+export function newExperimentNode(init: {
+  id: string;
+  hypothesis?: string;
+  parent?: ExperimentNode | null;
+}): ExperimentNode {
+  return {
+    id: init.id,
+    parentId: init.parent?.id ?? null,
+    depth: (init.parent?.depth ?? 0) + 1,
+    branch: '',
+    commitSha: null,
+    hypothesis: init.hypothesis ?? '',
+    status: 'pending',
+    score: null,
+    grade: null,
+    gateResults: [],
+    agentRun: null,
+    decisionReason: null,
+    createdAt: new Date().toISOString(),
+    finishedAt: null,
+  };
+}
+
+/** Projects a host agent result into the summary recorded on the node. */
+export function agentRunSummary(
+  hostId: string,
+  model: string | null,
+  result: {
+    costUsd: number | null;
+    tokensIn: number | null;
+    tokensOut: number | null;
+    durationMs: number;
+    exitReason: AgentRunSummary['exitReason'];
+  },
+): AgentRunSummary {
+  return {
+    hostId,
+    model,
+    costUsd: result.costUsd,
+    tokensIn: result.tokensIn,
+    tokensOut: result.tokensOut,
+    durationMs: result.durationMs,
+    exitReason: result.exitReason,
+  };
 }
 
 export function betterThan(a: number, b: number, direction: MetricDirection): boolean {

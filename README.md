@@ -3,8 +3,9 @@
 [![npm version](https://img.shields.io/npm/v/paxcli)](https://www.npmjs.com/package/paxcli)
 [![CI](https://github.com/harikantbajaj/paxcli/actions/workflows/ci.yml/badge.svg)](https://github.com/harikantbajaj/paxcli/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Proof Ledger](https://img.shields.io/badge/proof%20ledger-1%20verified%20optimization%20%C2%B7%20best%20%E2%88%9284.8%25-2ea44f)](PROOF.md)
 
-**Verified autonomous code optimization.** Coding agents find performance improvements in your codebase — Paxcli produces proof that each improvement is real, safe, and reproducible.
+**Give Paxcli a slow endpoint. It returns a verified performance result you can review.** Coding agents propose improvements; Paxcli proves which changes are real, safe, and reproducible.
 
 > Paxcli does not ask you to trust an agent's claim that code is better. It produces a reproducible receipt showing what improved, by how much, under which checks, and whether the result held.
 
@@ -21,16 +22,21 @@
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-## Just describe a change
+## Optimize a real repository
 
 ```bash
-cd my-project
-npx paxcli
-# What do you want to change?
-# > Improve the form-submission page UI and make it responsive
+cd my-api
+npx paxcli start
+# first run discovers checks and creates the benchmark setup
+npx paxcli benchmark validate
+npx paxcli start --preset quick --budget 2
 ```
 
-That's the whole setup. Paxcli detects your coding agent (Claude Code or Codex), snapshots your working tree — committed, uncommitted, and untracked files, no commit required — discovers your test/lint/build commands, and hands the task to the agent in an isolated git worktree. Checks must pass (failures go back to the agent for up to two repair attempts), then the agent-only diff is applied to your working directory with your confirmation, unstaged, with a recovery patch saved. Existing tests, CI workflows, and credentials are integrity-pinned — an agent that touches them is auto-rejected.
+Paxcli discovers your test, lint, typecheck, and build commands, detects Claude Code or Codex, validates benchmark stability, then runs competing experiments in isolated worktrees. The result leads with the outcome, safety evidence, agent cost, and exact next action.
+
+Winners land on a branch only when you choose to apply them. Paxcli never merges for you.
+
+General protected coding tasks remain available through `paxcli task "describe the change"`, but benchmark-backed performance optimization is the primary product.
 
 Honest labels, always: a UI change gets **"checks passed"**, never "faster" or "better". The verified vocabulary below (Measured / Validated / Equivalent / Reproduced) is reserved for benchmark-backed optimization — which performance-flavored requests use automatically when a benchmark is configured.
 
@@ -48,23 +54,24 @@ The demo copies a deliberately slow HTTP API into a temp repo and lets a scripte
 
 That is the whole product in miniature: agents propose, a deterministic evaluator decides, and cheating loses.
 
-## Use it on your repository
+## Review and apply
 
 Requires [Claude Code](https://docs.anthropic.com/claude-code) installed and signed in, plus a git repo with tests.
-
-```bash
-cd your-api-repo
-npx paxcli start          # creates paxcli.config.json template on first run
-# fill in your benchmark command + gates, commit, then:
-npx paxcli start --preset quick --budget 2
-```
-
-Paxcli shows a permission summary, measures your baseline (and refuses to optimize against a noisy benchmark), then runs parallel experiments in isolated git worktrees. Winners land on a branch — **Paxcli never merges for you**:
 
 ```bash
 paxcli apply              # creates paxcli/winner/<run-id>
 git diff HEAD...paxcli/winner/<run-id>
 ```
+
+## Multi-repository agent dashboard
+
+```bash
+paxcli dashboard --fleet --repo acme/payments-api acme/reporting-api
+```
+
+Paxcli Fleet shows connected repositories, active agents, their stated plans and hypotheses, tool/file activity, checks, outputs, costs, verified outcomes, and approval state in one live dashboard. It does not expose private model chain-of-thought; it shows concise, auditable rationale and evidence.
+
+Fleet mode is memory-only in the local process. Starting or using it writes no config, JSON, receipt, log, or hidden directory to connected repositories. Hosted deployments ingest redacted events from ephemeral remote or self-hosted workers and keep repository settings in the control plane. A branch or PR is created only after explicit approval. See [docs/fleet-dashboard.md](docs/fleet-dashboard.md).
 
 ## How results are verified
 
@@ -90,6 +97,23 @@ Layered defenses, honestly framed — Paxcli **detects and reduces** common rewa
 
 Details and limitations: [docs/trust-boundary.md](docs/trust-boundary.md) · [docs/proof-layer.md](docs/proof-layer.md)
 
+## The Proof Ledger
+
+When you apply a result, paxcli records it in **`PROOF.md`** at your repository root — a
+committable, append-only ledger of every verified change. Each entry is a human-readable
+verification card backed by an embedded machine-readable receipt (redacted, versioned,
+schema-validated). This repository's own ledger starts with paxcli optimizing itself:
+[PROOF.md](PROOF.md).
+
+- Honest labels are structural: optimization entries carry the verified vocabulary; task
+  entries can only ever say *"checks passed"* or *"applied — not verified by paxcli"*.
+- `paxcli ledger verify` re-checks the file against its own embedded receipts — a tampered
+  entry or drifted stats header fails with exit 1. Even the ledger is verifiable.
+- `paxcli ledger badge` prints a README badge built from the ledger stats (verified
+  vocabulary only when a benchmark-backed optimization is on record).
+- Writes are unstaged and best-effort — never required for a run to succeed. Opt out with
+  `--no-ledger` or `"ledger": { "enabled": false }` in `paxcli.config.json`.
+
 ## Commands
 
 ```
@@ -114,6 +138,9 @@ paxcli benchmark discover   ranked optimization opportunities (static heuristics
 paxcli ci baseline          store a performance baseline snapshot
 paxcli ci verify            fail CI when performance regresses beyond tolerance
 paxcli config validate      validate paxcli.config.json
+paxcli ledger show          list the Proof Ledger entries in this repository
+paxcli ledger verify        check the ledger against its own embedded receipts
+paxcli ledger badge         README badge built from the ledger stats
 ```
 
 Every command supports `--json`: stable JSON on stdout, progress on stderr. Each run also writes a **research journal** (`.paxcli/runs/<id>/journal.md`) — what was tried, what worked, what got ruled out — so even a run with no winner leaves knowledge behind.

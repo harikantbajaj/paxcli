@@ -4,13 +4,14 @@ import { execa } from 'execa';
 import { type GateConfig, gateSchema, policySchema } from '../config/schema.js';
 import type { DetectedCommand, RepoDiscovery } from '../discovery/repo.js';
 import { runGates } from '../gates/engine.js';
+import { ensureHostAvailable } from '../hosts/detect.js';
 import type { HostAdapter } from '../hosts/types.js';
 import { buildAgentEnv } from '../policy/env.js';
-import { runDetectors } from '../proof/detectors.js';
-import { capturePins, verifyPins } from '../proof/pins.js';
+import { capturePins } from '../proof/pins.js';
+import { screenCandidate } from '../proof/verify.js';
 import { type Snapshot, buildSnapshot, writeResultRef } from '../snapshot/build.js';
-import { EngineLock, EventStore } from '../tree/store.js';
-import type { ExperimentNode, GateResult } from '../tree/types.js';
+import { EngineLock, EventStore, appendTerminalEvent } from '../tree/store.js';
+import { type GateResult, agentRunSummary, newExperimentNode } from '../tree/types.js';
 import { runId as newRunId, shortId } from '../util/ids.js';
 import { Worktree, WorktreeBackend } from '../worktree/local.js';
 import {
@@ -31,67 +32,9 @@ import {
 
 export const TASK_MARKER_FILENAME = 'task.json';
 
-/**
- * Install artifacts must never masquerade as agent changes: the snapshot
- * already excludes dependency directories, and staging here unstages them
- * again (repositories without a .gitignore would otherwise sweep node_modules
- * into the diff, the detectors, and the final patch). Same rm --cached trick
- * as the snapshot builder — exclude pathspec magic errors on ignored paths.
- */
-const TASK_STAGE_EXCLUDES = [
-  'node_modules',
-  '*/node_modules',
-  '.venv',
-  '*/.venv',
-  '__pycache__',
-  '*/__pycache__',
-];
-
-async function wtGit(wtPath: string, args: string[]): Promise<string> {
-  const { stdout } = await execa('git', args, { cwd: wtPath });
-  return String(stdout).trim();
-}
-
-async function taskStage(wtPath: string, opts: { intentToAdd?: boolean } = {}): Promise<void> {
-  await wtGit(wtPath, ['add', '-A', ...(opts.intentToAdd ? ['-N'] : [])]);
-  await wtGit(wtPath, [
-    'rm',
-    '--cached',
-    '-r',
-    '-q',
-    '--force',
-    '--ignore-unmatch',
-    '--',
-    ...TASK_STAGE_EXCLUDES,
-  ]);
-}
-
-async function taskChangedFiles(wtPath: string): Promise<string[]> {
-  await taskStage(wtPath, { intentToAdd: true });
-  const out = await wtGit(wtPath, ['diff', '--name-only', 'HEAD']);
-  return out ? out.split('\n') : [];
-}
-
-async function taskDiff(wtPath: string): Promise<string> {
-  await taskStage(wtPath, { intentToAdd: true });
-  const { stdout } = await execa('git', ['diff', 'HEAD'], { cwd: wtPath });
-  return String(stdout);
-}
-
-async function taskCommit(wtPath: string, message: string): Promise<string> {
-  await taskStage(wtPath);
-  await wtGit(wtPath, [
-    '-c',
-    'user.name=paxcli',
-    '-c',
-    'user.email=paxcli@localhost',
-    'commit',
-    '-m',
-    message,
-    '--no-verify',
-  ]);
-  return wtGit(wtPath, ['rev-parse', 'HEAD']);
-}
+// Staging with dependency-directory exclusion lives on Worktree
+// (stageAllExcludingDeps in ../worktree/local.js) — shared with the optimize
+// engine so install artifacts never masquerade as agent changes in either flow.
 
 export interface TaskRunOptions {
   repoRoot: string;
@@ -157,16 +100,23 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
   const id = newRunId();
   const store = await EventStore.create(repoRoot, id);
   const lock = await EngineLock.acquire(store.dir);
-  await writeFile(
-    path.join(store.dir, TASK_MARKER_FILENAME),
-    JSON.stringify({ task, createdAt: new Date().toISOString() }, null, 2),
-    'utf8',
-  );
-  await writeFile(
-    path.join(store.dir, 'discovery.json'),
-    JSON.stringify(discovery, null, 2),
-    'utf8',
-  );
+  // Anything that can throw between acquire and the main try/finally must
+  // release the lock itself, or the run dir stays locked forever.
+  try {
+    await writeFile(
+      path.join(store.dir, TASK_MARKER_FILENAME),
+      JSON.stringify({ task, createdAt: new Date().toISOString() }, null, 2),
+      'utf8',
+    );
+    await writeFile(
+      path.join(store.dir, 'discovery.json'),
+      JSON.stringify(discovery, null, 2),
+      'utf8',
+    );
+  } catch (err) {
+    await lock.release();
+    throw err;
+  }
 
   const outcome: TaskOutcome = {
     runId: id,
@@ -188,32 +138,18 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
     intent,
   };
 
-  const detection = await host.detect();
-  if (!detection.found) {
+  try {
+    await ensureHostAvailable(host);
+  } catch (err) {
     await lock.release();
-    throw new Error(detection.problem ?? `Host "${host.id}" not available`);
+    throw err;
   }
 
   let wt: Worktree | null = null;
   let keepWorktree = false;
   let snapshot: Snapshot | null = null;
 
-  const node: ExperimentNode = {
-    id: `task-${shortId(4)}`,
-    parentId: null,
-    depth: 1,
-    branch: '',
-    commitSha: null,
-    hypothesis: task.slice(0, 200),
-    status: 'pending',
-    score: null,
-    grade: null,
-    gateResults: [],
-    agentRun: null,
-    decisionReason: null,
-    createdAt: new Date().toISOString(),
-    finishedAt: null,
-  };
+  const node = newExperimentNode({ id: `task-${shortId(4)}`, hypothesis: task.slice(0, 200) });
 
   const finish = async (status: TaskStatus, reason: string) => {
     outcome.status = status;
@@ -228,16 +164,11 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
         finishedAt: new Date().toISOString(),
       },
     });
-    if (signal.aborted) {
-      await store.append({ type: 'run_interrupted', at: new Date().toISOString() });
-    } else {
-      await store.append({
-        type: 'run_finished',
-        reason,
-        bestNodeId: status === 'succeeded' ? node.id : null,
-        finishedAt: new Date().toISOString(),
-      });
-    }
+    await appendTerminalEvent(store, {
+      aborted: signal.aborted,
+      reason,
+      bestNodeId: status === 'succeeded' ? node.id : null,
+    });
   };
 
   try {
@@ -348,17 +279,7 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
       await store.append({
         type: 'node_updated',
         nodeId: node.id,
-        patch: {
-          agentRun: {
-            hostId: host.id,
-            model: opts.model ?? null,
-            costUsd: agentResult.costUsd,
-            tokensIn: agentResult.tokensIn,
-            tokensOut: agentResult.tokensOut,
-            durationMs: agentResult.durationMs,
-            exitReason: agentResult.exitReason,
-          },
-        },
+        patch: { agentRun: agentRunSummary(host.id, opts.model ?? null, agentResult) },
       });
 
       if (signal.aborted) {
@@ -374,19 +295,25 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
       }
       outcome.summary = extractSummary(agentResult.finalText);
 
-      // Engine-side verification — the agent never judges its own work.
-      const violations = await verifyPins(wt.path, pins);
-      if (violations.length > 0) {
-        const list = violations.map((v) => `${v.file} (${v.kind})`).join(', ');
+      // Engine-side verification — the shared screening pipeline (pins →
+      // change check → detectors). The agent never judges its own work.
+      // Dependency changes are allowed in task mode ("add a date picker" may
+      // genuinely need one) but always surface as a review flag.
+      const screen = await screenCandidate({
+        worktree: wt,
+        pins,
+        allowDependencyChanges: true,
+      });
+
+      if (screen.verdict === 'pin-violation') {
         await finish(
           'rejected',
-          `The agent modified protected file(s): ${list}. Protected files (existing tests, CI, config) are integrity-pinned; edits to them are auto-rejected.`,
+          `The agent modified protected file(s): ${screen.files}. Protected files (existing tests, CI, config) are integrity-pinned; edits to them are auto-rejected.`,
         );
         return outcome;
       }
 
-      outcome.changedFiles = await taskChangedFiles(wt.path);
-      if (outcome.changedFiles.length === 0) {
+      if (screen.verdict === 'no-changes') {
         if (intent === 'inquiry') {
           outcome.summary = 'Repository question answered.';
           await finish('succeeded', 'Repository question answered without changing any files.');
@@ -400,6 +327,9 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
       }
 
       if (intent === 'inquiry') {
+        // A question never authorizes edits, whatever the diff contains.
+        outcome.changedFiles =
+          screen.verdict === 'clean' ? screen.changedFiles : await wt.changedFiles();
         await finish(
           'rejected',
           `This was a repository question, so file changes were not authorized: ${outcome.changedFiles.join(', ')}.`,
@@ -407,17 +337,14 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
         return outcome;
       }
 
-      // Dependency changes are allowed in task mode ("add a date picker" may
-      // genuinely need one) but always surface as a review flag.
-      const findings = runDetectors(await taskDiff(wt.path), { allowDependencyChanges: true });
-      const violation = findings.find((f) => f.severity === 'violation');
-      if (violation) {
-        await finish('rejected', `Detector "${violation.detector}": ${violation.detail}`);
+      if (screen.verdict === 'detector-violation') {
+        outcome.changedFiles = await wt.changedFiles();
+        await finish('rejected', `Detector "${screen.detector}": ${screen.detail}`);
         return outcome;
       }
-      outcome.suspicions = findings
-        .filter((f) => f.severity === 'suspicion')
-        .map((f) => `${f.detector}: ${f.detail}`);
+
+      outcome.changedFiles = screen.changedFiles;
+      outcome.suspicions = screen.suspicions;
 
       const gateResults: GateResult[] = await runGates(gates, wt.path, env, onStatus);
       outcome.checks = gateResults.map((g) => ({
@@ -460,7 +387,7 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
     }
 
     // Accepted: commit in the worktree, record recovery references, write the patch.
-    outcome.resultSha = await taskCommit(wt.path, `paxcli task: ${outcome.summary}\n\nRun ${id}`);
+    outcome.resultSha = await wt.commit(`paxcli task: ${outcome.summary}\n\nRun ${id}`);
     await writeResultRef(repoRoot, id, outcome.resultSha);
     const { stdout: patchText } = await execa(
       'git',
@@ -501,7 +428,7 @@ async function writeFailurePatch(
   outcome: TaskOutcome,
 ): Promise<void> {
   try {
-    const diff = await taskDiff(wt.path);
+    const diff = await wt.diff();
     if (diff.trim()) {
       const file = path.join(storeDir, 'attempt.patch');
       await writeFile(file, `${diff}\n`, 'utf8');

@@ -6,5 +6,12 @@ export default defineConfig({
     testTimeout: 60_000,
     hookTimeout: 60_000,
     pool: 'forks',
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts'],
+      reporter: ['text', 'html'],
+      // Reporting only — no threshold gate until coverage stabilizes.
+    },
   },
 });

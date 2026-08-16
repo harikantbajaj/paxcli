@@ -90,21 +90,24 @@ export class EventStore {
   /**
    * Reads every complete event. A torn final line (crash mid-append) is
    * dropped; anything torn earlier than the tail means real corruption and
-   * raises instead of silently losing accepted work.
+   * raises instead of silently losing accepted work. Every envelope is
+   * shape-validated and version-migrated before replay.
    */
   async readAll(): Promise<EventEnvelope[]> {
     const raw = await readFile(this.eventsPath, 'utf8');
     const lines = raw.split('\n').filter((l) => l.trim().length > 0);
     const envelopes: EventEnvelope[] = [];
     for (let i = 0; i < lines.length; i++) {
+      let parsed: unknown;
       try {
-        envelopes.push(JSON.parse(lines[i] as string) as EventEnvelope);
+        parsed = JSON.parse(lines[i] as string);
       } catch (err) {
         if (i === lines.length - 1) break;
         throw new Error(
           `Event log ${this.eventsPath} is corrupt at line ${i + 1} (not the tail): ${(err as Error).message}`,
         );
       }
+      envelopes.push(migrateEnvelope(validateEnvelope(parsed, this.eventsPath, i + 1)));
     }
     // Logs written before appends were serialized may hold adjacent events in
     // swapped file order; sequence numbers are authoritative, file order is not.
@@ -134,6 +137,63 @@ export class EventStore {
   }
 }
 
+function validateEnvelope(parsed: unknown, file: string, line: number): EventEnvelope {
+  const env = parsed as Partial<EventEnvelope> | null;
+  if (
+    !env ||
+    typeof env.v !== 'number' ||
+    typeof env.seq !== 'number' ||
+    typeof env.at !== 'string' ||
+    typeof env.event?.type !== 'string'
+  ) {
+    throw new Error(`Event log ${file} line ${line} is not a valid event envelope.`);
+  }
+  return env as EventEnvelope;
+}
+
+/**
+ * Migration registry: ENVELOPE_MIGRATIONS[v] upgrades a v-schema envelope to
+ * v+1. Empty at version 1 — bumping EVENT_SCHEMA_VERSION now requires adding
+ * a migration here instead of silently breaking old runs.
+ */
+const ENVELOPE_MIGRATIONS: Record<number, (env: EventEnvelope) => EventEnvelope> = {};
+
+function migrateEnvelope(env: EventEnvelope): EventEnvelope {
+  let current = env;
+  if (current.v > EVENT_SCHEMA_VERSION) {
+    throw new Error(
+      `Event log entry has schema version ${current.v} (this paxcli reads up to ${EVENT_SCHEMA_VERSION}). Upgrade paxcli to read this run.`,
+    );
+  }
+  while (current.v < EVENT_SCHEMA_VERSION) {
+    const migrate = ENVELOPE_MIGRATIONS[current.v];
+    if (!migrate) {
+      throw new Error(
+        `Event log entry has schema version ${current.v} and no migration to ${EVENT_SCHEMA_VERSION} exists.`,
+      );
+    }
+    current = migrate(current);
+  }
+  return current;
+}
+
+/** Terminal event shared by both engines: interrupted wins over finished. */
+export async function appendTerminalEvent(
+  store: EventStore,
+  params: { aborted: boolean; reason: string; bestNodeId: string | null },
+): Promise<void> {
+  if (params.aborted) {
+    await store.append({ type: 'run_interrupted', at: new Date().toISOString() });
+  } else {
+    await store.append({
+      type: 'run_finished',
+      reason: params.reason,
+      bestNodeId: params.bestNodeId,
+      finishedAt: new Date().toISOString(),
+    });
+  }
+}
+
 export function reduceEvents(envelopes: EventEnvelope[]): RunSummary {
   const summary: RunSummary = {
     runId: '',
@@ -148,6 +208,7 @@ export function reduceEvents(envelopes: EventEnvelope[]): RunSummary {
     finishReason: null,
     bestNodeId: null,
     round: 0,
+    reproduction: null,
   };
   for (const { event } of envelopes) {
     switch (event.type) {
@@ -177,6 +238,13 @@ export function reduceEvents(envelopes: EventEnvelope[]): RunSummary {
       case 'cost_recorded':
         summary.totalCostUsd += event.costUsd;
         break;
+      case 'winner_reproduced':
+        summary.reproduction = {
+          nodeId: event.nodeId,
+          held: event.held,
+          display: event.display,
+        };
+        break;
       case 'run_finished':
         summary.finished = true;
         summary.finishReason = event.reason;
@@ -184,6 +252,14 @@ export function reduceEvents(envelopes: EventEnvelope[]): RunSummary {
         break;
       case 'run_interrupted':
         break;
+      default: {
+        // Exhaustiveness guard: a new EngineEvent type must add a case here,
+        // or replay silently drops it (this is exactly how reproduction
+        // evidence got lost once).
+        const unhandled: never = event;
+        void unhandled;
+        break;
+      }
     }
   }
   return summary;
@@ -202,7 +278,7 @@ export class EngineLock {
     const lockPath = path.join(dir, 'engine.lock');
     if (existsSync(lockPath)) {
       const existing = JSON.parse(await readFile(lockPath, 'utf8')) as LockInfo;
-      if (isProcessAlive(existing.pid)) {
+      if (existing.pid !== process.pid && (await lockHolderAlive(existing))) {
         throw new Error(
           `Another Paxcli engine (pid ${existing.pid}) already owns this run. ` +
             `If that process is gone, delete ${lockPath} and retry.`,
@@ -216,6 +292,44 @@ export class EngineLock {
 
   async release(): Promise<void> {
     await rm(this.lockPath, { force: true });
+  }
+}
+
+/**
+ * A live PID alone is not proof the lock holder is running — PIDs recycle
+ * fast on Windows. A process that started AFTER the lock was written cannot
+ * be the writer, so the lock is stale. When the OS start time is unavailable
+ * the check stays conservative: alive PID = lock held.
+ */
+async function lockHolderAlive(info: LockInfo): Promise<boolean> {
+  if (!isProcessAlive(info.pid)) return false;
+  const started = await processStartTime(info.pid);
+  if (started === null) return true;
+  const lockTime = Date.parse(info.startedAt);
+  if (Number.isNaN(lockTime)) return true;
+  // 5s slack: lockTime is stamped after process start, and clock precision differs.
+  return started.getTime() <= lockTime + 5000;
+}
+
+async function processStartTime(pid: number): Promise<Date | null> {
+  try {
+    const { execa } = await import('execa');
+    if (process.platform === 'win32') {
+      const { stdout } = await execa('powershell', [
+        '-NoProfile',
+        '-Command',
+        `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')`,
+      ]);
+      const parsed = new Date(String(stdout).trim());
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    const { stdout } = await execa('ps', ['-o', 'lstart=', '-p', String(pid)]);
+    const raw = String(stdout).trim();
+    if (!raw) return null;
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  } catch {
+    return null;
   }
 }
 

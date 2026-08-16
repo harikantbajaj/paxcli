@@ -18,6 +18,26 @@ export interface SampleOutput {
   secondary?: Record<string, number>;
 }
 
+/**
+ * Finds the benchmark's JSON result line in raw stdout, scanning from the
+ * bottom up so app logging above the result never confuses it. Returns null
+ * when no valid line exists.
+ */
+export function parseSampleOutput(stdout: string): SampleOutput | null {
+  const lines = stdout.trim().split('\n').filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = (lines[i] as string).trim();
+    if (!line.startsWith('{')) continue;
+    try {
+      const parsed = JSON.parse(line) as SampleOutput;
+      if (typeof parsed.metric === 'string' && typeof parsed.value === 'number') return parsed;
+    } catch {
+      // keep scanning upward for the JSON result line
+    }
+  }
+  return null;
+}
+
 export interface MeasureResult {
   score: Score;
   stability: StabilityVerdict;
@@ -123,17 +143,8 @@ export class BenchmarkHarness {
 
   private async sampleOnce(env: Record<string, string>): Promise<SampleOutput> {
     const stdout = await this.run(this.config.sampleCmd, env, this.config.sampleTimeoutMs);
-    const lines = stdout.trim().split('\n').filter(Boolean);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = (lines[i] as string).trim();
-      if (!line.startsWith('{')) continue;
-      try {
-        const parsed = JSON.parse(line) as SampleOutput;
-        if (typeof parsed.metric === 'string' && typeof parsed.value === 'number') return parsed;
-      } catch {
-        // keep scanning upward for the JSON result line
-      }
-    }
+    const parsed = parseSampleOutput(stdout);
+    if (parsed) return parsed;
     throw new Error(
       `Benchmark sample command produced no JSON result line ({"metric": ..., "value": ...}). Output tail:\n${stdout.slice(-500)}`,
     );
@@ -200,7 +211,17 @@ async function stopProcess(proc: ResultPromise): Promise<void> {
     // real server as an orphaned grandchild holding our stdio pipes open —
     // which also blocks execa's promise from ever settling. Kill the tree.
     if (process.platform === 'win32' && proc.pid) {
-      await execa('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { reject: false });
+      // Graceful first, then force — mirrors the SIGTERM → SIGKILL ladder
+      // below. The forced /F sweep must stay: without it, shell:true
+      // grandchildren survive and leak servers.
+      await execa('taskkill', ['/pid', String(proc.pid), '/T'], { reject: false, timeout: 5000 });
+      await Promise.race([proc.catch(() => {}), sleep(2000)]);
+      if (proc.exitCode === undefined || proc.exitCode === null) {
+        await execa('taskkill', ['/pid', String(proc.pid), '/T', '/F'], {
+          reject: false,
+          timeout: 5000,
+        });
+      }
     } else if (proc.pid) {
       // Negative pid = the whole process group (see detached above).
       try {

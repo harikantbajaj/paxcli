@@ -1,5 +1,5 @@
-import { appendFile } from 'node:fs/promises';
 import { execa } from 'execa';
+import { buildAgentRunResult, streamJsonlAgent } from '../stream.js';
 import type { AgentRunResult, AgentSpawnOpts, HostAdapter, HostDetection } from '../types.js';
 
 /**
@@ -39,9 +39,6 @@ export class ClaudeCodeAdapter implements HostAdapter {
   }
 
   async spawnAgent(opts: AgentSpawnOpts): Promise<AgentRunResult> {
-    const started = Date.now();
-    // The prompt travels via stdin: passing multi-line text as a CLI argument
-    // through shell:true gets mangled by cmd.exe on Windows.
     const args = [
       '-p',
       '--output-format',
@@ -54,43 +51,19 @@ export class ClaudeCodeAdapter implements HostAdapter {
     ];
     if (opts.model) args.push('--model', opts.model);
 
-    const child = execa('claude', args, {
-      cwd: opts.cwd,
-      env: opts.env,
-      extendEnv: false,
-      shell: true,
-      timeout: opts.timeoutMs,
-      cancelSignal: opts.signal,
-      forceKillAfterDelay: 5000,
-      reject: false,
-      buffer: false,
-      input: opts.prompt,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-
     let finalText = '';
     let costUsd: number | null = null;
     let tokensIn: number | null = null;
     let tokensOut: number | null = null;
     let sawResult = false;
     let isError = false;
-    let carry = '';
 
-    child.stdout?.on('data', (chunk: Buffer) => {
-      carry += chunk.toString('utf8');
-      const lines = carry.split('\n');
-      carry = lines.pop() ?? '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        void appendFile(opts.logPath, `${trimmed}\n`, 'utf8').catch(() => {});
-        let event: StreamEvent;
-        try {
-          event = JSON.parse(trimmed) as StreamEvent;
-        } catch {
-          continue;
-        }
+    const run = await streamJsonlAgent({
+      command: 'claude',
+      args,
+      opts,
+      onEvent: (raw) => {
+        const event = raw as StreamEvent;
         if (event.type === 'assistant' && event.message?.content) {
           for (const block of event.message.content) {
             if (block.type === 'tool_use' && block.name) {
@@ -106,55 +79,19 @@ export class ClaudeCodeAdapter implements HostAdapter {
           tokensIn = event.usage?.input_tokens ?? null;
           tokensOut = event.usage?.output_tokens ?? null;
         }
-      }
+      },
     });
 
-    const result = await child;
-    const durationMs = Date.now() - started;
-
-    if (opts.signal.aborted) {
-      return {
-        ok: false,
-        exitReason: 'cancelled',
-        finalText,
-        costUsd,
-        tokensIn,
-        tokensOut,
-        durationMs,
-      };
-    }
-    if (result.timedOut) {
-      return {
-        ok: false,
-        exitReason: 'timeout',
-        finalText,
-        costUsd,
-        tokensIn,
-        tokensOut,
-        durationMs,
-      };
-    }
-    if (!sawResult || isError || result.exitCode !== 0) {
-      const stderrTail = String(result.stderr ?? '').slice(-500);
-      return {
-        ok: false,
-        exitReason: 'error',
-        finalText: finalText || `Claude Code exited ${result.exitCode}. ${stderrTail}`,
-        costUsd,
-        tokensIn,
-        tokensOut,
-        durationMs,
-      };
-    }
-    return {
-      ok: true,
-      exitReason: 'completed',
+    return buildAgentRunResult({
+      run,
+      opts,
+      label: 'Claude Code',
       finalText,
       costUsd,
       tokensIn,
       tokensOut,
-      durationMs,
-    };
+      failed: !sawResult || isError,
+    });
   }
 }
 

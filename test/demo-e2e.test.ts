@@ -4,12 +4,12 @@ import { Output } from '../src/cli/output.js';
 
 /**
  * End-to-end proof: the full loop against the bundled demo API.
- * Asserts the exact story `ascent demo` tells:
+ * Asserts the exact story `paxcli demo` tells:
  *  - the benchmark-tampering patch is rejected by integrity pins,
  *  - the hard-coded-response patch is rejected by a gate,
  *  - the genuine algorithmic fix is accepted with a meaningful improvement.
  */
-describe('ascent demo end-to-end', () => {
+describe('paxcli demo end-to-end', () => {
   it('rejects both reward hacks and accepts the real fix', async () => {
     const out = new Output(true); // JSON mode: progress to stderr only
     const outcome = await runDemo(out);

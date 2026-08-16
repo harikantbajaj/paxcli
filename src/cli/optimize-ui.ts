@@ -1,5 +1,6 @@
 import pc from 'picocolors';
 import type { PaxcliConfig } from '../config/schema.js';
+import { FleetClient } from '../control-plane/client.js';
 import { type RunOutcome, runOptimize } from '../engine/run-loop.js';
 import type { HostAdapter } from '../hosts/types.js';
 import { permissionSummary } from '../policy/env.js';
@@ -40,6 +41,7 @@ export interface OptimizeUiOptions {
 /** Shared runner: SIGINT-safe optimize with human/JSON reporting. */
 export async function runOptimizeWithUi(opts: OptimizeUiOptions): Promise<RunOutcome> {
   const { repoRoot, config, host, out } = opts;
+  const fleet = FleetClient.fromEnvironment();
 
   if (opts.showPermissions !== false) {
     out.info('');
@@ -61,17 +63,32 @@ export async function runOptimizeWithUi(opts: OptimizeUiOptions): Promise<RunOut
   process.once('SIGINT', onSigint);
 
   try {
-    const outcome = await runOptimize({
+    await fleet?.begin({
       repoRoot,
-      config,
-      host,
-      signal: controller.signal,
-      onStatus: (msg) => out.status(msg),
-      ...(opts.resumeRunId ? { resumeRunId: opts.resumeRunId } : {}),
-      ...(opts.extraSteering ? { extraSteering: opts.extraSteering } : {}),
+      request: opts.extraSteering ?? 'Find a verified performance improvement',
+      agent: host.id,
+      model: config.host.model ?? null,
     });
-    reportOutcome(outcome, out);
-    return outcome;
+    try {
+      const outcome = await runOptimize({
+        repoRoot,
+        config,
+        host,
+        signal: controller.signal,
+        onStatus: (msg) => {
+          out.status(msg);
+          void fleet?.status(msg);
+        },
+        ...(opts.resumeRunId ? { resumeRunId: opts.resumeRunId } : {}),
+        ...(opts.extraSteering ? { extraSteering: opts.extraSteering } : {}),
+      });
+      await fleet?.finish(outcome);
+      reportOutcome(outcome, out);
+      return outcome;
+    } catch (error) {
+      await fleet?.fail(error);
+      throw error;
+    }
   } finally {
     process.removeListener('SIGINT', onSigint);
   }
@@ -88,6 +105,23 @@ export function reportOutcome(outcome: RunOutcome, out: Output): void {
     const bestReceipt = outcome.receipts.find((r) => r.nodeId === outcome.bestNode?.id);
     if (bestReceipt && !out.json) {
       out.info('');
+      out.info(pc.green(pc.bold('✓ Verified improvement')));
+      out.info(`Change:   ${bestReceipt.hypothesis}`);
+      out.info(`Outcome:  ${bestReceipt.comparison?.display ?? bestReceipt.decisionReason}`);
+      out.info(
+        `Evidence: ${bestReceipt.grade ?? 'measured'} · ${bestReceipt.gates.filter((gate) => gate.pass).length}/${bestReceipt.gates.length} checks passed${bestReceipt.reproduction ? ` · fresh reproduction ${bestReceipt.reproduction.held ? 'held' : 'failed'}` : ''}`,
+      );
+      if (bestReceipt.agent) {
+        const cost =
+          bestReceipt.agent.costUsd == null
+            ? 'cost unavailable'
+            : `$${bestReceipt.agent.costUsd.toFixed(2)}`;
+        out.info(
+          `Agent:    ${bestReceipt.agent.hostId}${bestReceipt.agent.model ? ` (${bestReceipt.agent.model})` : ''} · ${cost}`,
+        );
+      }
+      out.info('');
+      out.info(pc.dim('Verification details'));
       out.info(renderVerificationCard(bestReceipt));
     }
     out.info('');

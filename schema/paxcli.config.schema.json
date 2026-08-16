@@ -328,6 +328,22 @@
           },
           "additionalProperties": false,
           "default": {}
+        },
+        "ledger": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "default": "PROOF.md"
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
         }
       },
       "required": [

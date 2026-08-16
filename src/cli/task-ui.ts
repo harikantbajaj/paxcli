@@ -1,3 +1,4 @@
+import path from 'node:path';
 import pc from 'picocolors';
 import { applyTaskResult } from '../apply/patch.js';
 import { discoverRepo } from '../discovery/repo.js';
@@ -44,6 +45,8 @@ export interface TaskFlowOptions {
   yes?: boolean;
   /** Skip dependency install in the worktree (tests). */
   installDeps?: boolean;
+  /** Record the applied result in the Proof Ledger (PROOF.md). Default true. */
+  ledger?: boolean;
 }
 
 export async function runTaskFlow(opts: TaskFlowOptions): Promise<void> {
@@ -166,6 +169,7 @@ export async function runTaskFlow(opts: TaskFlowOptions): Promise<void> {
 
   let applied = false;
   let conflicts: string[] = [];
+  let ledger: { file: string; added: boolean } | null = null;
   if (apply && outcome.snapshotSha && outcome.resultSha && outcome.patchPath) {
     const result = await applyTaskResult({
       repoRoot: root,
@@ -185,6 +189,9 @@ export async function runTaskFlow(opts: TaskFlowOptions): Promise<void> {
         ),
       );
       out.info(`Recovery patch: ${outcome.patchPath}`);
+      if (opts.ledger !== false) {
+        ledger = await recordTaskInLedger(root, outcome, out);
+      }
     } else if (result.conflicts.length > 0) {
       out.info(
         pc.red(
@@ -223,9 +230,32 @@ export async function runTaskFlow(opts: TaskFlowOptions): Promise<void> {
     totalCostUsd: outcome.totalCostUsd,
     applied,
     conflicts,
+    ledger,
     patchPath: outcome.patchPath,
     worktreePath: outcome.worktreePath,
   });
+}
+
+/** Best-effort: the ledger is evidence, not a gate — never fails the flow. */
+async function recordTaskInLedger(
+  repoRoot: string,
+  outcome: TaskOutcome,
+  out: Output,
+): Promise<{ file: string; added: boolean } | null> {
+  try {
+    const { entryFromTaskOutcome } = await import('../ledger/schema.js');
+    const { appendLedgerEntry } = await import('../ledger/file.js');
+    const res = await appendLedgerEntry({ repoRoot, entry: entryFromTaskOutcome(outcome) });
+    if (res.added) {
+      out.info(
+        `${pc.green('✓')} Recorded in ${path.basename(res.file)} (unstaged — commit it with the change, or re-run with --no-ledger).`,
+      );
+    }
+    return { file: res.file, added: res.added };
+  } catch (err) {
+    out.info(pc.yellow(`! Proof Ledger not updated: ${(err as Error).message}`));
+    return null;
+  }
 }
 
 function reportFailure(outcome: TaskOutcome, out: Output): void {

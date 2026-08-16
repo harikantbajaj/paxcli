@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { ConfigError } from '../util/errors.js';
 
 /**
  * paxcli.config.json — the single source of truth for a repository's
@@ -146,6 +147,19 @@ export const paxcliConfigSchema = z.object({
       model: z.string().optional(),
     })
     .default({}),
+  /**
+   * Proof Ledger: the committable PROOF.md paxcli maintains in your repository
+   * when you apply a verified result. Entries are redacted, honest-labeled,
+   * and machine-readable (`paxcli ledger verify`). Writes are unstaged and
+   * best-effort — never required for a run to succeed.
+   */
+  ledger: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Repo-relative path of the ledger file. */
+      path: z.string().min(1).default('PROOF.md'),
+    })
+    .default({}),
 });
 
 export type PaxcliConfig = z.infer<typeof paxcliConfigSchema>;
@@ -161,8 +175,9 @@ export async function loadConfig(repoRoot: string): Promise<PaxcliConfig> {
   try {
     raw = await readFile(file, 'utf8');
   } catch {
-    throw new Error(
-      `No ${CONFIG_FILENAME} found in ${repoRoot}. Run \`paxcli start\` for guided setup.`,
+    throw new ConfigError(
+      `No ${CONFIG_FILENAME} found in ${repoRoot}.`,
+      'Run `paxcli start` for guided setup — it writes a template to fill in.',
     );
   }
   return parseConfig(raw, file);
@@ -173,14 +188,17 @@ export function parseConfig(raw: string, sourceLabel = CONFIG_FILENAME): PaxcliC
   try {
     json = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`${sourceLabel} is not valid JSON: ${(err as Error).message}`);
+    throw new ConfigError(`${sourceLabel} is not valid JSON: ${(err as Error).message}`);
   }
   const result = paxcliConfigSchema.safeParse(json);
   if (!result.success) {
     const issues = result.error.issues
       .map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`)
       .join('\n');
-    throw new Error(`${sourceLabel} failed validation:\n${issues}`);
+    throw new ConfigError(
+      `${sourceLabel} failed validation:\n${issues}`,
+      'Fix the fields above, then check with `paxcli config validate`.',
+    );
   }
   return result.data;
 }

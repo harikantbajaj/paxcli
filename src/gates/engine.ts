@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { execa } from 'execa';
 import type { GateConfig } from '../config/schema.js';
 import type { GateResult } from '../tree/types.js';
@@ -17,9 +18,25 @@ export async function runGates(
   for (const gate of gates) {
     onStatus?.(`Running gate: ${gate.name}`);
     const started = Date.now();
+    // Gates run INSIDE the worktree — a cwd that resolves outside it would
+    // silently run checks against the user's real tree instead of the
+    // candidate under evaluation.
+    const gateCwd = gate.cwd ? path.resolve(cwd, gate.cwd) : cwd;
+    const rel = path.relative(cwd, gateCwd);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      results.push({
+        gateId: gate.id,
+        name: gate.name,
+        pass: false,
+        exitCode: null,
+        durationMs: 0,
+        stdoutTail: `Gate cwd "${gate.cwd}" resolves outside the worktree — gates must run inside the experiment checkout.`,
+      });
+      break;
+    }
     try {
       const { exitCode, stdout, stderr } = await execa(gate.cmd, {
-        cwd: gate.cwd ? `${cwd}/${gate.cwd}` : cwd,
+        cwd: gateCwd,
         env,
         shell: true,
         timeout: gate.timeoutMs,

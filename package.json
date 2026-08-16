@@ -1,7 +1,7 @@
 {
   "name": "paxcli",
-  "version": "0.3.1",
-  "description": "Verified autonomous code optimization. Coding agents find performance improvements; Paxcli produces proof that each one is real, safe, and reproducible.",
+  "version": "0.6.0",
+  "description": "Verified performance improvements from coding agents, with reproducible proof and a live multi-repository control plane.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "Harikant Bajaj <harikant@processflows.ai>",
@@ -25,6 +25,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./hosts": {
+      "types": "./dist/hosts.d.ts",
+      "import": "./dist/hosts.js"
+    },
+    "./proof": {
+      "types": "./dist/proof.d.ts",
+      "import": "./dist/proof.js"
     }
   },
   "files": [
@@ -32,6 +40,7 @@
     "examples/demo-api",
     "examples/demo-patches.json",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
@@ -39,6 +48,7 @@
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
@@ -67,6 +77,7 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^3.2.7",
     "fastify": "^5.0.0",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0",

@@ -1,0 +1,261 @@
+{
+  "$ref": "#/definitions/PaxcliLedgerEntry",
+  "definitions": {
+    "PaxcliLedgerEntry": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ledgerEntryVersion": {
+              "type": "number",
+              "const": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "optimization"
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "nodeId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recordedAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "hypothesis": {
+              "type": "string"
+            },
+            "grade": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "measured",
+                    "validated",
+                    "equivalent",
+                    "reproduced",
+                    "production-confirmed"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "metric": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "improvementPct": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "noiseFloorPct": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "display": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "gates": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "pass": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "name",
+                  "pass"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "withheldPassed": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "reproductionHeld": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "pinsVerified": {
+              "type": "boolean"
+            },
+            "risks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "costUsd": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "baseCommit": {
+              "type": "string"
+            },
+            "finalCommit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reproduceCmd": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ledgerEntryVersion",
+            "kind",
+            "runId",
+            "nodeId",
+            "recordedAt",
+            "hypothesis",
+            "grade",
+            "metric",
+            "improvementPct",
+            "noiseFloorPct",
+            "display",
+            "gates",
+            "withheldPassed",
+            "reproductionHeld",
+            "pinsVerified",
+            "risks",
+            "costUsd",
+            "baseCommit",
+            "finalCommit",
+            "reproduceCmd"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ledgerEntryVersion": {
+              "type": "number",
+              "const": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "task"
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recordedAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "summary": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string",
+              "enum": [
+                "checks passed",
+                "applied — not verified by paxcli"
+              ]
+            },
+            "changedFiles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "cmd": {
+                    "type": "string"
+                  },
+                  "pass": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "name",
+                  "cmd",
+                  "pass"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "suspicions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "costUsd": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "snapshotCommit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resultCommit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "ledgerEntryVersion",
+            "kind",
+            "runId",
+            "recordedAt",
+            "summary",
+            "label",
+            "changedFiles",
+            "checks",
+            "suspicions",
+            "costUsd",
+            "snapshotCommit",
+            "resultCommit"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Proof Ledger entry",
+  "description": "One machine-readable entry of a paxcli Proof Ledger (PROOF.md). Optimization entries carry the verified vocabulary; task entries only ever say \"checks passed\" or \"applied — not verified by paxcli\"."
+}

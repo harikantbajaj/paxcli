@@ -84,12 +84,13 @@ async function loadRedactedReceipts(receiptsDir: string): Promise<Receipt[]> {
   } catch {
     return receipts;
   }
+  const { parseReceipt } = await import('../proof/receipt.js');
   for (const f of files) {
     if (!f.endsWith('.redacted.json')) continue;
     try {
-      receipts.push(JSON.parse(await readFile(path.join(receiptsDir, f), 'utf8')) as Receipt);
+      receipts.push(parseReceipt(JSON.parse(await readFile(path.join(receiptsDir, f), 'utf8')), f));
     } catch {
-      // skip unreadable receipt
+      // skip unreadable or invalid receipt
     }
   }
   return receipts;

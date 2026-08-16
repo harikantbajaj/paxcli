@@ -16,6 +16,7 @@ Deferred work, ordered by the P0→P3 ladder in PLAN.md. The rule that governs e
 - [x] `paxcli pr` — evidence-backed GitHub PR via gh
 - [x] Redacted receipts (secret scanning; reports/PRs use redacted variants only)
 - [x] Read-only decision dashboard (token, Host validation, CSP, SSE, idle shutdown)
+- [x] Zero-footprint multi-repository Fleet dashboard MVP (memory-only control plane, redacted live events, repository settings, run status, costs, and approvals; no repository writes)
 - [x] Researcher/executor role split (`search.roles: "split"`)
 - [x] Epsilon-greedy frontier (`search.strategy: "epsilon-greedy"`)
 - [x] `paxcli ci baseline` / `paxcli ci verify` — regression prevention
@@ -27,9 +28,9 @@ Deferred work, ordered by the P0→P3 ladder in PLAN.md. The rule that governs e
 - [ ] Public repo performance badge service
 - [ ] Open-source optimization campaign (run paxcli on real OSS repos, submit upstream PRs — the strongest product evidence)
 
-## P3 — company (services, not CLI code)
+## P3 — company (hosted services, not local CLI code)
 
-- [ ] Team dashboard, org policies, SSO/audit, remote workers, self-hosted control plane
+- [ ] Durable hosted Fleet service: GitHub App, encrypted multi-tenant storage, organization policies, SSO/audit, remote workers, and self-hosted runner
 - [ ] Optimization packs: FastAPI, SQL, LLM apps, bundle size
 - [ ] Signed community recipes
 - [ ] Container-backed isolation mode
@@ -47,5 +48,5 @@ Deferred work, ordered by the P0→P3 ladder in PLAN.md. The rule that governs e
 - Budget can overshoot by one active agent call (documented; live mid-run cancellation on cost threshold would tighten it).
 - Withheld cases are kept out of worktrees, not process-isolated — a local agent could in principle read the directory (documented in docs/trust-boundary.md).
 - Codex adapter reports tokens, not USD (Codex does not expose cost); budget tracking for Codex runs is time/token-based.
-- Event-log schema migrations: versioned envelope exists; migration runner needed before 1.0.
+- ~~Event-log schema migrations~~ DONE 0.5.0: envelopes and receipts are validated on read with version-migration registries.
 - Discovery is static heuristics only; profiling/trace-driven discovery is future work.

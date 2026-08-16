@@ -5,18 +5,24 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { execa } from 'execa';
 import pc from 'picocolors';
-import { BenchmarkHarness } from '../bench/harness.js';
 import { CONFIG_FILENAME, type PaxcliConfig, loadConfig, parseConfig } from '../config/schema.js';
+import { startFleetDashboard } from '../control-plane/server.js';
+import { describeDiscovery, discoverRepo } from '../discovery/repo.js';
 import { TASK_MARKER_FILENAME } from '../engine/task-loop.js';
 import { createHostAdapter } from '../hosts/claude-code/adapter.js';
 import { detectHosts } from '../hosts/detect.js';
-import type { Receipt } from '../proof/receipt.js';
-import { renderVerificationCard } from '../report/card.js';
 import { deleteInternalRefs, listInternalRefs } from '../snapshot/build.js';
 import { EventStore, runDir } from '../tree/store.js';
 import { improvementPct } from '../tree/types.js';
-import { EXP_BRANCH_PREFIX, WorktreeBackend, gitOutput, snapshotRepo } from '../worktree/local.js';
+import { GitStateError, HostUnavailableError } from '../util/errors.js';
+import { EXP_BRANCH_PREFIX, WorktreeBackend, gitOutput } from '../worktree/local.js';
+import { registerBenchmarkCommands } from './commands/benchmark.js';
+import { registerCiCommands } from './commands/ci.js';
+import { registerConfigCommands } from './commands/config.js';
+import { registerLedgerCommands } from './commands/ledger.js';
+import { registerRunCommands } from './commands/run.js';
 import { runDemo } from './demo.js';
+import { guard, recordOptimizationInLedger, resolveAcceptedNode } from './helpers.js';
 import { type PresetName, applyPreset, runOptimizeWithUi } from './optimize-ui.js';
 import { Output } from './output.js';
 import { looksLikeInquiryRequest, looksLikePerformanceRequest, runTaskFlow } from './task-ui.js';
@@ -32,7 +38,7 @@ const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),
 program
   .name('paxcli')
   .description(
-    'Verified autonomous code optimization: coding agents find performance improvements; Paxcli proves each one is real, safe, and reproducible.',
+    'Give Paxcli a slow endpoint. Coding agents propose fixes; Paxcli returns a verified performance result you can review.',
   )
   .version(pkg.version);
 
@@ -40,11 +46,12 @@ program
 
 program
   .command('task [request...]', { isDefault: true })
-  .description('Ask about the repository or describe a change in plain English')
+  .description('Ask about the repository or run a protected general coding task')
   .option('--host <id>', 'claude-code | codex | mock (default: auto-detect)')
   .option('--model <model>', 'model override for the agent')
   .option('--budget <usd>', 'maximum agent spend in USD', '5')
   .option('--mock-patches <file>', 'patch script for the mock host (testing)')
+  .option('--no-ledger', 'skip recording the applied result in the Proof Ledger (PROOF.md)')
   .option('--json', 'machine-readable output on stdout')
   .option('-y, --yes', 'apply the result without asking')
   .action(async (request: string[], opts: TaskCmdOpts) => {
@@ -66,7 +73,7 @@ program
 
 program
   .command('start')
-  .description('Guided run on this repository: checks, permissions, then optimize')
+  .description('Find a verified performance improvement in this repository')
   .option('--preset <name>', 'quick | balanced | deep (omit to use your config values as-is)')
   .option('--host <id>', 'claude-code | codex | mock', 'claude-code')
   .option('--budget <usd>', 'maximum agent spend in USD')
@@ -153,11 +160,19 @@ program
         const pct = improvementPct(best.score.value, summary.baseline.value, best.score.direction);
         out.info(pc.bold(`Best: ${best.id} — ${pct.toFixed(1)}% improvement (${best.grade})`));
       }
+      if (summary.reproduction) {
+        out.info(
+          summary.reproduction.held
+            ? pc.green(`Fresh reproduction: held (${summary.reproduction.display})`)
+            : pc.red(`Fresh reproduction: did NOT hold (${summary.reproduction.display})`),
+        );
+      }
       out.result({
         runId: latest,
         finished: summary.finished,
         reason: summary.finishReason,
         bestNodeId: summary.bestNodeId,
+        reproduction: summary.reproduction,
         totalCostUsd: summary.totalCostUsd,
         nodes: nodes.map((n) => ({
           id: n.id,
@@ -173,114 +188,118 @@ program
   .command('apply [nodeId]')
   .description('Create a reviewable branch (paxcli/winner/<run>) from an accepted experiment')
   .option('--run <runId>', 'run to take the experiment from (default: latest)')
+  .option('--no-ledger', 'skip recording this result in the Proof Ledger (PROOF.md)')
   .option('--json', 'machine-readable output on stdout')
-  .action(async (nodeId: string | undefined, opts: { run?: string; json?: boolean }) => {
-    const out = new Output(Boolean(opts.json));
-    await guard(out, async () => {
-      const repoRoot = process.cwd();
-      const runs = await EventStore.listRuns(repoRoot);
-      const runIdValue = opts.run ?? runs.at(-1);
-      if (!runIdValue) throw new Error('No runs found in this repository.');
-      const store = await EventStore.open(repoRoot, runIdValue);
-      const summary = await store.replay();
-      const chosenId = nodeId ?? summary.bestNodeId;
-      if (!chosenId) throw new Error(`Run ${runIdValue} has no accepted experiment to apply.`);
-      const node = summary.nodes.get(chosenId);
-      if (!node || node.status !== 'accepted' || !node.commitSha) {
-        throw new Error(`Experiment ${chosenId} is not an accepted result.`);
-      }
-      const backend = new WorktreeBackend(repoRoot);
-      const branch = await backend.createWinnerBranch(runIdValue, node.commitSha);
-      out.info(
-        `${pc.green('✓')} Created branch ${pc.cyan(branch)} at ${node.commitSha.slice(0, 7)}`,
-      );
-      out.info(`  Hypothesis: ${node.hypothesis}`);
-      out.info(`  ${node.decisionReason}`);
-      out.info('');
-      out.info('Review and merge it yourself — Paxcli never merges for you:');
-      out.info(`  git diff HEAD...${branch}`);
-      out.info(`  git merge ${branch}`);
-      out.result({ branch, commit: node.commitSha, nodeId: chosenId, runId: runIdValue });
-    });
-  });
+  .action(
+    async (nodeId: string | undefined, opts: { run?: string; json?: boolean; ledger: boolean }) => {
+      const out = new Output(Boolean(opts.json));
+      await guard(out, async () => {
+        const repoRoot = process.cwd();
+        const winner = await resolveAcceptedNode(repoRoot, nodeId, opts.run);
+        const backend = new WorktreeBackend(repoRoot);
+        const branch = await backend.createWinnerBranch(winner.runId, winner.commitSha);
+        out.info(
+          `${pc.green('✓')} Created branch ${pc.cyan(branch)} at ${winner.commitSha.slice(0, 7)}`,
+        );
+        out.info(`  Hypothesis: ${winner.node.hypothesis}`);
+        out.info(`  ${winner.node.decisionReason}`);
+        const ledger = opts.ledger
+          ? await recordOptimizationInLedger(repoRoot, winner.store, winner.nodeId, out)
+          : null;
+        out.info('');
+        out.info('Review and merge it yourself — Paxcli never merges for you:');
+        out.info(`  git diff HEAD...${branch}`);
+        out.info(`  git merge ${branch}`);
+        out.result({
+          branch,
+          commit: winner.commitSha,
+          nodeId: winner.nodeId,
+          runId: winner.runId,
+          ledger,
+        });
+      });
+    },
+  );
 
 program
   .command('doctor')
   .description('Check this environment and repository, with exact repair steps')
-  .option('--host <id>', 'claude-code | mock', 'claude-code')
+  .option('--host <id>', 'claude-code | codex | mock', 'claude-code')
   .option('--json', 'machine-readable output on stdout')
   .action(async (opts: { json?: boolean; host: string }) => {
     const out = new Output(Boolean(opts.json));
-    const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
-    const add = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
+    await guard(out, async () => {
+      const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
+      const add = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
 
-    const major = Number(process.versions.node.split('.')[0]);
-    add('Node.js >= 20', major >= 20, `found ${process.version}`);
+      const major = Number(process.versions.node.split('.')[0]);
+      add('Node.js >= 20', major >= 20, `found ${process.version}`);
 
-    try {
-      const v = await gitOutput(process.cwd(), ['--version']);
-      add('git available', true, v);
-    } catch {
-      add('git available', false, 'install git and ensure it is on PATH');
-    }
-    try {
-      await gitOutput(process.cwd(), ['rev-parse', 'HEAD']);
-      add('git repository with at least one commit', true, 'ok');
-    } catch {
-      add(
-        'git repository with at least one commit',
-        false,
-        'run: git init && git add -A && git commit -m "baseline"',
-      );
-    }
-    const configPath = path.join(process.cwd(), CONFIG_FILENAME);
-    if (existsSync(configPath)) {
       try {
-        await loadConfig(process.cwd());
-        add(`${CONFIG_FILENAME} valid`, true, 'ok');
-      } catch (err) {
-        add(`${CONFIG_FILENAME} valid`, false, (err as Error).message);
+        const v = await gitOutput(process.cwd(), ['--version']);
+        add('git available', true, v);
+      } catch {
+        add('git available', false, 'install git and ensure it is on PATH');
       }
-    } else {
-      add(CONFIG_FILENAME, false, 'not found — `paxcli start` will create a template');
-    }
-    const hosts = await detectHosts();
-    const usable = hosts.filter((h) => h.installed && h.authenticated !== false);
-    add(
-      'coding agent (Claude Code or Codex)',
-      usable.length > 0,
-      hosts
-        .map(
-          (h) =>
-            `${h.label}: ${
-              h.installed
-                ? `${h.version ?? 'installed'}${
-                    h.authenticated === true
-                      ? ', signed in'
-                      : h.authenticated === false
-                        ? ', signed out'
-                        : ''
-                  }`
-                : 'not found'
-            }`,
-        )
-        .join(' · '),
-    );
-    if (opts.host && opts.host !== 'claude-code') {
-      const host = await createHostAdapter(opts.host);
-      const detection = await host.detect();
+      try {
+        await gitOutput(process.cwd(), ['rev-parse', 'HEAD']);
+        add('git repository with at least one commit', true, 'ok');
+      } catch {
+        add(
+          'git repository with at least one commit',
+          false,
+          'run: git init && git add -A && git commit -m "baseline"',
+        );
+      }
+      const configPath = path.join(process.cwd(), CONFIG_FILENAME);
+      if (existsSync(configPath)) {
+        try {
+          await loadConfig(process.cwd());
+          add(`${CONFIG_FILENAME} valid`, true, 'ok');
+        } catch (err) {
+          add(`${CONFIG_FILENAME} valid`, false, (err as Error).message);
+        }
+      } else {
+        add(CONFIG_FILENAME, false, 'not found — `paxcli start` will create a template');
+      }
+      const hosts = await detectHosts();
+      const usable = hosts.filter((h) => h.installed && h.authenticated !== false);
       add(
-        `host: ${opts.host}`,
-        detection.found,
-        detection.found ? (detection.version ?? 'ok') : (detection.problem ?? 'not found'),
+        'coding agent (Claude Code or Codex)',
+        usable.length > 0,
+        hosts
+          .map(
+            (h) =>
+              `${h.label}: ${
+                h.installed
+                  ? `${h.version ?? 'installed'}${
+                      h.authenticated === true
+                        ? ', signed in'
+                        : h.authenticated === false
+                          ? ', signed out'
+                          : ''
+                    }`
+                  : 'not found'
+              }`,
+          )
+          .join(' · '),
       );
-    }
+      if (opts.host && opts.host !== 'claude-code') {
+        const host = await createHostAdapter(opts.host);
+        const detection = await host.detect();
+        add(
+          `host: ${opts.host}`,
+          detection.found,
+          detection.found ? (detection.version ?? 'ok') : (detection.problem ?? 'not found'),
+        );
+      }
 
-    for (const c of checks) {
-      out.info(`${c.ok ? pc.green('✓') : pc.red('✗')} ${c.name} — ${c.detail}`);
-    }
-    out.result({ checks });
-    if (checks.some((c) => !c.ok)) process.exitCode = 1;
+      for (const c of checks) {
+        out.info(`${c.ok ? pc.green('✓') : pc.red('✗')} ${c.name} — ${c.detail}`);
+      }
+      out.result({ checks });
+      if (checks.some((c) => !c.ok)) process.exitCode = 1;
+    });
   });
 
 program
@@ -313,215 +332,6 @@ program
     });
   });
 
-// ------------------------------------------------------------------- run ---
-
-const run = program.command('run').description('Inspect past runs and experiments');
-
-run
-  .command('list')
-  .description('List runs in this repository')
-  .option('--json', 'machine-readable output on stdout')
-  .action(async (opts: { json?: boolean }) => {
-    const out = new Output(Boolean(opts.json));
-    await guard(out, async () => {
-      const runs = await EventStore.listRuns(process.cwd());
-      const rows: Array<Record<string, unknown>> = [];
-      for (const id of runs) {
-        const summary = await (await EventStore.open(process.cwd(), id)).replay();
-        const accepted = [...summary.nodes.values()].filter((n) => n.status === 'accepted').length;
-        rows.push({
-          runId: id,
-          finished: summary.finished,
-          reason: summary.finishReason,
-          experiments: summary.nodes.size,
-          accepted,
-          costUsd: summary.totalCostUsd,
-        });
-        out.info(
-          `${id} — ${summary.finished ? summary.finishReason : 'unfinished'} · ${summary.nodes.size} experiments · ${accepted} accepted · $${summary.totalCostUsd.toFixed(2)}`,
-        );
-      }
-      if (runs.length === 0) out.info('No runs yet.');
-      out.result({ runs: rows });
-    });
-  });
-
-run
-  .command('explain <nodeId>')
-  .description('Show the full receipt and Verification Card for an experiment')
-  .option('--run <runId>', 'run the experiment belongs to (default: latest)')
-  .option('--json', 'machine-readable output on stdout')
-  .action(async (nodeId: string, opts: { run?: string; json?: boolean }) => {
-    const out = new Output(Boolean(opts.json));
-    await guard(out, async () => {
-      const runs = await EventStore.listRuns(process.cwd());
-      const runIdValue = opts.run ?? runs.at(-1);
-      if (!runIdValue) throw new Error('No runs found.');
-      const store = await EventStore.open(process.cwd(), runIdValue);
-      const receiptPath = path.join(store.receiptsDir(), `${nodeId}.json`);
-      if (!existsSync(receiptPath))
-        throw new Error(`No receipt for experiment ${nodeId} in run ${runIdValue}.`);
-      const receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as Receipt;
-      if (!out.json) {
-        console.log(renderVerificationCard(receipt));
-        console.log('');
-        console.log(pc.bold('Hypothesis:'), receipt.hypothesis);
-        console.log(
-          pc.bold('Agent:'),
-          receipt.agent
-            ? `${receipt.agent.hostId} (${receipt.agent.exitReason}, ${receipt.agent.durationMs}ms)`
-            : 'n/a',
-        );
-        console.log(pc.bold('Receipt:'), receiptPath);
-      }
-      out.result({ receipt });
-    });
-  });
-
-run
-  .command('reproduce <nodeId>')
-  .description(
-    'Re-verify an accepted experiment in brand-new worktrees (interleaved with a fresh baseline)',
-  )
-  .option('--run <runId>', 'run the experiment belongs to (default: latest)')
-  .option('--json', 'machine-readable output on stdout')
-  .action(async (nodeId: string, opts: { run?: string; json?: boolean }) => {
-    const out = new Output(Boolean(opts.json));
-    await guard(out, async () => {
-      const repoRoot = process.cwd();
-      const runs = await EventStore.listRuns(repoRoot);
-      const runIdValue = opts.run ?? runs.at(-1);
-      if (!runIdValue) throw new Error('No runs found.');
-      const store = await EventStore.open(repoRoot, runIdValue);
-      const receiptPath = path.join(store.receiptsDir(), `${nodeId}.json`);
-      if (!existsSync(receiptPath)) throw new Error(`No receipt for experiment ${nodeId}.`);
-      const receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as Receipt;
-      if (!receipt.finalCommit)
-        throw new Error(`Experiment ${nodeId} has no committed result to reproduce.`);
-      const config = await loadConfig(repoRoot);
-      const { reproduceWinner } = await import('../engine/run-loop.js');
-      const backend = new WorktreeBackend(repoRoot);
-      const { held, comparison } = await reproduceWinner({
-        backend,
-        config,
-        baseSha: receipt.baseCommit,
-        winnerSha: receipt.finalCommit,
-        onStatus: (m) => out.status(m),
-      });
-      out.info(
-        held
-          ? pc.green(`✓ Reproduction held: ${comparison.display}`)
-          : pc.red(`✗ Reproduction did NOT hold: ${comparison.display}`),
-      );
-      out.result({ held, comparison });
-      if (!held) process.exitCode = 1;
-    });
-  });
-
-run
-  .command('report')
-  .description('Write a shareable (redacted) markdown report for a run')
-  .option('--run <runId>', 'run to report on (default: latest)')
-  .option('--json', 'machine-readable output on stdout')
-  .action(async (opts: { run?: string; json?: boolean }) => {
-    const out = new Output(Boolean(opts.json));
-    await guard(out, async () => {
-      const repoRoot = process.cwd();
-      const runs = await EventStore.listRuns(repoRoot);
-      const runIdValue = opts.run ?? runs.at(-1);
-      if (!runIdValue) throw new Error('No runs found.');
-      const store = await EventStore.open(repoRoot, runIdValue);
-      const summary = await store.replay();
-      const { buildRunReport, writeRunReport } = await import('../report/markdown.js');
-      const content = await buildRunReport({ summary, receiptsDir: store.receiptsDir() });
-      const file = await writeRunReport(store.dir, content);
-      out.info(`${pc.green('✓')} Report written (redacted, safe to share): ${file}`);
-      out.result({ file });
-    });
-  });
-
-// -------------------------------------------------------------- benchmark --
-
-const bench = program.command('benchmark').description('Benchmark reliability tools');
-
-bench
-  .command('validate')
-  .description('Measure the benchmark on current HEAD and judge its reliability')
-  .option('--json', 'machine-readable output on stdout')
-  .action(async (opts: { json?: boolean }) => {
-    const out = new Output(Boolean(opts.json));
-    await guard(out, async () => {
-      const repoRoot = process.cwd();
-      const config = await loadConfig(repoRoot);
-      const snapshot = await snapshotRepo(repoRoot);
-      const backend = new WorktreeBackend(repoRoot);
-      const wt = await backend.provision(`val-${Date.now() % 100000}`, snapshot.headSha);
-      try {
-        const harness = new BenchmarkHarness(config.benchmark, {
-          cwd: wt.path,
-          onStatus: (m) => out.status(m),
-        });
-        const result = await harness.measure('validation');
-        out.info('');
-        out.info(
-          `${config.benchmark.metric}: median ${result.score.value.toFixed(2)} over ${result.score.samples.length} samples`,
-        );
-        out.info(`Noise (CV): ${result.stability.cvPct.toFixed(1)}%`);
-        if (result.stability.ok) {
-          out.info(pc.green('✓ Reliable enough to optimize against.'));
-        } else {
-          out.info(pc.red('✗ Not reliable enough:'));
-          for (const p of result.stability.problems) out.info(`  - ${p}`);
-          process.exitCode = 1;
-        }
-        out.result({ score: result.score, stability: result.stability });
-      } finally {
-        await wt.destroy({ keepBranch: false });
-      }
-    });
-  });
-
-bench
-  .command('discover')
-  .description(
-    'Scan the codebase for ranked optimization opportunities (heuristics — the benchmark decides)',
-  )
-  .option('--json', 'machine-readable output on stdout')
-  .action(async (opts: { json?: boolean }) => {
-    const out = new Output(Boolean(opts.json));
-    await guard(out, async () => {
-      const repoRoot = process.cwd();
-      let writable = ['src/**'];
-      try {
-        writable = (await loadConfig(repoRoot)).policy.writable;
-      } catch {
-        // no config yet — scan the default src glob
-      }
-      const { discover } = await import('../discovery/scan.js');
-      const findings = await discover(repoRoot, writable);
-      out.info(
-        pc.dim(`Scanned files matching: ${writable.join(', ')} (your config's policy.writable)`),
-      );
-      if (findings.length === 0) {
-        out.info(
-          'No common performance smells found in that scope. Widen policy.writable to scan more — and remember: static heuristics only suggest, the benchmark tells the real story.',
-        );
-      } else {
-        out.info(pc.bold(`Found ${findings.length} candidate(s), strongest signal first:\n`));
-        for (const f of findings.slice(0, 12)) {
-          out.info(
-            `${pc.cyan(`${f.file}:${f.line}`)} [${f.category}] confidence ${f.confidence}/5`,
-          );
-          out.info(`  ${pc.dim(f.snippet)}`);
-          out.info(`  ${f.why}\n`);
-        }
-      }
-      out.result({ findings });
-    });
-  });
-
-// ----------------------------------------------------------------- config --
-
 // ------------------------------------------------------------- steering ----
 
 program
@@ -542,12 +352,37 @@ program
 
 program
   .command('dashboard')
-  .description('Open a read-only live view of a run (127.0.0.1, token-protected)')
+  .description('Open a live run view or the zero-footprint multi-repository fleet dashboard')
   .option('--run <runId>', 'run to view (default: latest)')
   .option('--port <port>', 'port (default: random free port)')
-  .action(async (opts: { run?: string; port?: string }) => {
+  .option('--fleet', 'show connected repositories and live agent activity; writes nothing to repos')
+  .option('--repo <names...>', 'repository names to display initially in fleet mode')
+  .action(async (opts: { run?: string; port?: string; fleet?: boolean; repo?: string[] }) => {
     const out = new Output(false);
     await guard(out, async () => {
+      if (opts.fleet) {
+        const handle = await startFleetDashboard({
+          port: opts.port ? Number(opts.port) : 0,
+          repositories: opts.repo ?? [],
+        });
+        out.info('Paxcli Fleet — zero-footprint multi-repository agent dashboard:');
+        out.info(`  ${pc.cyan(handle.url)}`);
+        out.info(
+          pc.dim(
+            'Memory-only in this process. No config, JSON, receipt, or hidden file is written to connected repositories.',
+          ),
+        );
+        out.info('');
+        out.info('To stream Paxcli runs from another terminal without adding repository files:');
+        if (process.platform === 'win32') {
+          out.info(`  ${pc.cyan(`$env:PAXCLI_FLEET_URL='${handle.url}'`)}`);
+        } else {
+          out.info(`  ${pc.cyan(`export PAXCLI_FLEET_URL='${handle.url}'`)}`);
+        }
+        out.info(`  ${pc.cyan('paxcli start')}`);
+        await new Promise(() => {});
+        return;
+      }
       const runs = await EventStore.listRuns(process.cwd());
       const runIdValue = opts.run ?? runs.at(-1);
       if (!runIdValue) throw new Error('No runs to display. Start one with `paxcli start`.');
@@ -576,25 +411,28 @@ program
     const out = new Output(false);
     await guard(out, async () => {
       const repoRoot = process.cwd();
-      const runs = await EventStore.listRuns(repoRoot);
-      const runIdValue = opts.run ?? runs.at(-1);
-      if (!runIdValue) throw new Error('No runs found.');
-      const store = await EventStore.open(repoRoot, runIdValue);
-      const summary = await store.replay();
-      const chosenId = nodeId ?? summary.bestNodeId;
-      const node = chosenId ? summary.nodes.get(chosenId) : null;
-      if (!node || node.status !== 'accepted' || !node.commitSha) {
-        throw new Error('No accepted experiment to open a PR for.');
-      }
+      const winner = await resolveAcceptedNode(repoRoot, nodeId, opts.run);
       const backend = new WorktreeBackend(repoRoot);
-      const branch = await backend.createWinnerBranch(runIdValue, node.commitSha);
+      const branch = await backend.createWinnerBranch(winner.runId, winner.commitSha);
 
       const { buildRunReport } = await import('../report/markdown.js');
-      const body = await buildRunReport({ summary, receiptsDir: store.receiptsDir() });
+      const body = await buildRunReport({
+        summary: winner.summary,
+        receiptsDir: winner.store.receiptsDir(),
+      });
+
+      try {
+        await execa('gh', ['--version']);
+      } catch {
+        throw new HostUnavailableError(
+          'GitHub CLI (gh) not found.',
+          'Install it from https://cli.github.com and run `gh auth login` — or push the branch and open the PR manually.',
+        );
+      }
 
       out.status(`Pushing ${branch} and opening a PR (nothing is merged without your review)`);
       await execa('git', ['push', '-u', 'origin', branch], { cwd: repoRoot });
-      const title = `perf: ${node.hypothesis.slice(0, 70)}`;
+      const title = `perf: ${winner.node.hypothesis.slice(0, 70)}`;
       const { stdout } = await execa(
         'gh',
         ['pr', 'create', '--head', branch, '--title', title, '--body', body],
@@ -604,89 +442,13 @@ program
     });
   });
 
-// -------------------------------------------------------------------- ci ---
+// ----------------------------------------------------------- sub-groups ----
 
-const ci = program.command('ci').description('Regression prevention for CI pipelines');
-
-ci.command('baseline')
-  .description('Measure HEAD and store it as the performance baseline snapshot')
-  .option('--json', 'machine-readable output on stdout')
-  .action(async (opts: { json?: boolean }) => {
-    const out = new Output(Boolean(opts.json));
-    await guard(out, async () => {
-      const repoRoot = process.cwd();
-      const config = await loadConfig(repoRoot);
-      const snapshot = await snapshotRepo(repoRoot);
-      const backend = new WorktreeBackend(repoRoot);
-      const wt = await backend.provision(`cib-${Date.now() % 100000}`, snapshot.headSha);
-      try {
-        const harness = new BenchmarkHarness(config.benchmark, {
-          cwd: wt.path,
-          onStatus: (m) => out.status(m),
-        });
-        const result = await harness.measure('ci baseline');
-        const { writeBaseline } = await import('../ci/baseline.js');
-        const file = await writeBaseline(repoRoot, result.score, snapshot.headSha);
-        out.info(
-          `${pc.green('✓')} Baseline stored: ${result.score.metric} = ${result.score.value.toFixed(2)} → ${file}`,
-        );
-        out.info('Commit .paxcli/baseline.json so CI can verify against it.');
-        out.result({ baseline: result.score, file });
-      } finally {
-        await wt.destroy({ keepBranch: false });
-      }
-    });
-  });
-
-ci.command('verify')
-  .description('Fail (exit 1) when HEAD regresses beyond tolerance vs the stored baseline')
-  .option('--tolerance <pct>', 'allowed regression percent beyond noise', '2')
-  .option('--json', 'machine-readable output on stdout')
-  .action(async (opts: { tolerance: string; json?: boolean }) => {
-    const out = new Output(Boolean(opts.json));
-    await guard(out, async () => {
-      const repoRoot = process.cwd();
-      const config = await loadConfig(repoRoot);
-      const { readBaseline, judgeRegression } = await import('../ci/baseline.js');
-      const stored = await readBaseline(repoRoot);
-      if (!stored) {
-        throw new Error(
-          'No baseline snapshot found. Create one with `paxcli ci baseline` and commit .paxcli/baseline.json.',
-        );
-      }
-      const snapshot = await snapshotRepo(repoRoot);
-      const backend = new WorktreeBackend(repoRoot);
-      const wt = await backend.provision(`civ-${Date.now() % 100000}`, snapshot.headSha);
-      try {
-        const harness = new BenchmarkHarness(config.benchmark, {
-          cwd: wt.path,
-          onStatus: (m) => out.status(m),
-        });
-        const result = await harness.measure('ci verify');
-        const verdict = judgeRegression(stored, result.score, config, Number(opts.tolerance));
-        out.info(verdict.ok ? pc.green(`✓ ${verdict.message}`) : pc.red(`✗ ${verdict.message}`));
-        out.result({ ok: verdict.ok, message: verdict.message, comparison: verdict.comparison });
-        if (!verdict.ok) process.exitCode = 1;
-      } finally {
-        await wt.destroy({ keepBranch: false });
-      }
-    });
-  });
-
-const configCmd = program.command('config').description('Configuration tools');
-
-configCmd
-  .command('validate')
-  .description(`Validate ${CONFIG_FILENAME}`)
-  .option('--json', 'machine-readable output on stdout')
-  .action(async (opts: { json?: boolean }) => {
-    const out = new Output(Boolean(opts.json));
-    await guard(out, async () => {
-      await loadConfig(process.cwd());
-      out.info(pc.green(`✓ ${CONFIG_FILENAME} is valid`));
-      out.result({ valid: true });
-    });
-  });
+registerRunCommands(program);
+registerBenchmarkCommands(program);
+registerCiCommands(program);
+registerConfigCommands(program);
+registerLedgerCommands(program);
 
 // ------------------------------------------------------------------- task --
 
@@ -695,6 +457,7 @@ interface TaskCmdOpts {
   model?: string;
   budget?: string;
   mockPatches?: string;
+  ledger?: boolean;
   json?: boolean;
   yes?: boolean;
 }
@@ -754,6 +517,7 @@ async function taskCommand(request: string[], opts: TaskCmdOpts, out: Output): P
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.budget ? { budgetUsd: Number(opts.budget) } : {}),
     ...(opts.yes ? { yes: true } : {}),
+    ledger: opts.ledger !== false,
   });
 }
 
@@ -773,20 +537,23 @@ async function startCommand(repoRoot: string, opts: StartOpts, out: Output): Pro
   try {
     await gitOutput(repoRoot, ['rev-parse', 'HEAD']);
   } catch {
-    throw new Error(
-      'This directory is not a git repository with a commit. Run `git init && git add -A && git commit -m baseline` first.',
+    throw new GitStateError(
+      'This directory is not a git repository with a commit.',
+      'Run `git init && git add -A && git commit -m baseline` first.',
     );
   }
 
   const configPath = path.join(repoRoot, CONFIG_FILENAME);
   if (!existsSync(configPath)) {
-    await writeConfigTemplate(configPath);
-    out.info(`Created ${pc.cyan(CONFIG_FILENAME)} — a template to fill in.`);
+    const discovery = await discoverRepo(repoRoot);
+    await writeConfigTemplate(configPath, discovery);
+    out.info(`Created ${pc.cyan(CONFIG_FILENAME)} with the checks Paxcli discovered.`);
+    out.info(describeDiscovery(discovery));
     out.info(
       'Guide with examples: https://github.com/harikantbajaj/paxcli/blob/main/docs/quickstart.md',
     );
     out.info(
-      'Fill in your benchmark command and gates, commit the file, then run `paxcli start` again.',
+      'Set the benchmark command and target endpoint, review the protected paths, then run `paxcli benchmark validate`.',
     );
     out.result({ createdTemplate: true, configPath });
     return;
@@ -818,7 +585,23 @@ async function startCommand(repoRoot: string, opts: StartOpts, out: Output): Pro
   if (!outcome.bestNode) process.exitCode = 1;
 }
 
-async function writeConfigTemplate(configPath: string): Promise<void> {
+async function writeConfigTemplate(
+  configPath: string,
+  discovery: Awaited<ReturnType<typeof discoverRepo>>,
+): Promise<void> {
+  const gates = (['typecheck', 'lint', 'test', 'build'] as const).flatMap((kind) => {
+    const detected = discovery.commands[kind];
+    return detected
+      ? [
+          {
+            id: kind,
+            name: kind === 'test' ? 'test suite' : kind,
+            cmd: detected.cmd,
+            kind: kind === 'test' ? 'tests' : 'custom',
+          },
+        ]
+      : [];
+  });
   const template = {
     $schema:
       'https://raw.githubusercontent.com/harikantbajaj/paxcli/main/schema/paxcli.config.schema.json',
@@ -831,26 +614,21 @@ async function writeConfigTemplate(configPath: string): Promise<void> {
       warmupSamples: 2,
       samples: 8,
     },
-    gates: [{ id: 'tests', name: 'test suite', cmd: 'npm test', kind: 'tests' }],
+    gates,
     constraints: [],
     policy: {
       writable: ['src/**'],
-      protected: ['paxcli.config.json', 'test/**', 'tests/**', '.github/**'],
+      protected: discovery.protectedGlobs,
     },
     search: { maxRounds: 3, parallel: 2, maxNodes: 8, plateauRounds: 2, minImprovementPct: 1 },
     budget: { maxCostUsd: 5 },
     host: { id: 'claude-code' },
+    ledger: { enabled: true, path: 'PROOF.md' },
   };
   await writeFile(configPath, JSON.stringify(template, null, 2), 'utf8');
 }
 
-async function guard(out: Output, fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-  } catch (err) {
-    out.error((err as Error).message);
-    process.exitCode = 1;
-  }
-}
-
-program.parseAsync(process.argv);
+program.parseAsync(process.argv).catch((err: Error) => {
+  console.error(`error: ${err.message}`);
+  process.exitCode = 1;
+});

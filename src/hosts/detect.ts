@@ -38,6 +38,18 @@ export async function detectHosts(): Promise<DetectedHost[]> {
   return [claude, codex];
 }
 
+/** Shared engine precondition: the chosen host must actually be usable. */
+export async function ensureHostAvailable(host: HostAdapter): Promise<void> {
+  const detection = await host.detect();
+  if (!detection.found) {
+    const { HostUnavailableError } = await import('../util/errors.js');
+    throw new HostUnavailableError(
+      detection.problem ?? `Host "${host.id}" not available`,
+      'Run `paxcli doctor` for the exact install/login steps.',
+    );
+  }
+}
+
 async function detectClaudeCode(): Promise<DetectedHost> {
   const base: DetectedHost = {
     id: 'claude-code',

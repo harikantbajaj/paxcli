@@ -1,0 +1,426 @@
+{
+  "$ref": "#/definitions/PaxcliReceipt",
+  "definitions": {
+    "PaxcliReceipt": {
+      "type": "object",
+      "properties": {
+        "receiptVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "runId": {
+          "type": "string"
+        },
+        "nodeId": {
+          "type": "string"
+        },
+        "grade": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "measured",
+                "validated",
+                "equivalent",
+                "reproduced",
+                "production-confirmed"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "rejected",
+            "failed"
+          ]
+        },
+        "decisionReason": {
+          "type": "string"
+        },
+        "hypothesis": {
+          "type": "string"
+        },
+        "baseCommit": {
+          "type": "string"
+        },
+        "finalCommit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "hostId": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "costUsd": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "tokensIn": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "tokensOut": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "durationMs": {
+                  "type": "number"
+                },
+                "exitReason": {
+                  "type": "string",
+                  "enum": [
+                    "completed",
+                    "timeout",
+                    "cancelled",
+                    "error",
+                    "budget"
+                  ]
+                }
+              },
+              "required": [
+                "hostId",
+                "model",
+                "costUsd",
+                "tokensIn",
+                "tokensOut",
+                "durationMs",
+                "exitReason"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "metric": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "minimize",
+                    "maximize"
+                  ]
+                },
+                "samples": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "secondary": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "number"
+                  }
+                }
+              },
+              "required": [
+                "metric",
+                "value",
+                "direction",
+                "samples"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidate": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "metric": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                },
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "minimize",
+                    "maximize"
+                  ]
+                },
+                "samples": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "secondary": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "number"
+                  }
+                }
+              },
+              "required": [
+                "metric",
+                "value",
+                "direction",
+                "samples"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "comparison": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "improvementPct": {
+                  "type": "number"
+                },
+                "noiseFloorPct": {
+                  "type": "number"
+                },
+                "requiredPct": {
+                  "type": "number"
+                },
+                "ci95": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "number"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "effectSize": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "display": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "improvementPct",
+                "noiseFloorPct",
+                "requiredPct",
+                "ci95",
+                "effectSize",
+                "display"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "gateId": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "pass": {
+                "type": "boolean"
+              },
+              "exitCode": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "durationMs": {
+                "type": "number"
+              },
+              "stdoutTail": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "gateId",
+              "name",
+              "pass",
+              "exitCode",
+              "durationMs",
+              "stdoutTail"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "pinsVerified": {
+          "type": "boolean"
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "withheld": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "configured": {
+                  "type": "boolean"
+                },
+                "pass": {
+                  "type": "boolean"
+                },
+                "category": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "configured",
+                "pass",
+                "category"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reproduction": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "held": {
+                  "type": "boolean"
+                },
+                "display": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "held",
+                "display"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "environment": {
+          "type": "object",
+          "properties": {
+            "os": {
+              "type": "string"
+            },
+            "arch": {
+              "type": "string"
+            },
+            "node": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "os",
+            "arch",
+            "node"
+          ],
+          "additionalProperties": false
+        },
+        "configHash": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "reproduceCmd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiptVersion",
+        "runId",
+        "nodeId",
+        "grade",
+        "decision",
+        "decisionReason",
+        "hypothesis",
+        "baseCommit",
+        "finalCommit",
+        "agent",
+        "baseline",
+        "candidate",
+        "comparison",
+        "gates",
+        "pinsVerified",
+        "risks",
+        "withheld",
+        "reproduction",
+        "environment",
+        "configHash",
+        "createdAt",
+        "reproduceCmd"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "paxcli receipt",
+  "description": "One experiment receipt: commits, hypothesis, gates, measurements, withheld/reproduction evidence, and the decision. Written under .paxcli/runs/<run>/receipts/; the .redacted.json variant is the shareable one."
+}

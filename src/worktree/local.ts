@@ -66,6 +66,38 @@ export async function unexpectedMainRepoChanges(
   return [...now].filter((line) => !line.slice(3).replace(/^"/, '').startsWith('.paxcli'));
 }
 
+/**
+ * Install artifacts must never masquerade as agent changes: repositories
+ * without a .gitignore would otherwise sweep dependency directories into the
+ * diff, the detectors, and the committed result. `:(exclude)` pathspec magic
+ * errors on gitignored paths, so stage-then-unstage is used instead.
+ */
+const STAGE_EXCLUDES = [
+  'node_modules',
+  '*/node_modules',
+  '.venv',
+  '*/.venv',
+  '__pycache__',
+  '*/__pycache__',
+];
+
+export async function stageAllExcludingDeps(
+  wtPath: string,
+  opts: { intentToAdd?: boolean } = {},
+): Promise<void> {
+  await git(wtPath, ['add', '-A', ...(opts.intentToAdd ? ['-N'] : [])]);
+  await git(wtPath, [
+    'rm',
+    '--cached',
+    '-r',
+    '-q',
+    '--force',
+    '--ignore-unmatch',
+    '--',
+    ...STAGE_EXCLUDES,
+  ]);
+}
+
 export class Worktree {
   constructor(
     readonly id: string,
@@ -75,7 +107,7 @@ export class Worktree {
   ) {}
 
   async commit(message: string): Promise<string> {
-    await git(this.path, ['add', '-A']);
+    await stageAllExcludingDeps(this.path);
     await git(this.path, [
       '-c',
       'user.name=paxcli',
@@ -90,13 +122,13 @@ export class Worktree {
   }
 
   async diff(): Promise<string> {
-    await git(this.path, ['add', '-A', '-N']);
+    await stageAllExcludingDeps(this.path, { intentToAdd: true });
     const { stdout } = await git(this.path, ['diff', 'HEAD']);
     return String(stdout);
   }
 
   async changedFiles(): Promise<string[]> {
-    await git(this.path, ['add', '-A', '-N']);
+    await stageAllExcludingDeps(this.path, { intentToAdd: true });
     const out = await gitOutput(this.path, ['diff', '--name-only', 'HEAD']);
     return out ? out.split('\n') : [];
   }
