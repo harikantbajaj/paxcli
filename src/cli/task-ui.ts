@@ -19,6 +19,19 @@ export function looksLikePerformanceRequest(task: string): boolean {
   );
 }
 
+/** Conservative routing for explicit requests to explain or inspect, not edit. */
+export function looksLikeInquiryRequest(task: string): boolean {
+  const value = task.trim();
+  return (
+    /^(?:can|could|would|will|do|does|did|is|are|was|were|what|why|when|where|who|which|how)\b/i.test(
+      value,
+    ) ||
+    /^(?:please\s+)?(?:tell me|explain|describe|summar(?:ize|ise)|walk me through|show me how)\b/i.test(
+      value,
+    )
+  );
+}
+
 export interface TaskFlowOptions {
   cwd: string;
   request: string;
@@ -35,6 +48,7 @@ export interface TaskFlowOptions {
 
 export async function runTaskFlow(opts: TaskFlowOptions): Promise<void> {
   const { out } = opts;
+  const intent = looksLikeInquiryRequest(opts.request) ? 'inquiry' : 'change';
 
   const { root, created } = await ensureRepo(opts.cwd);
   if (created) {
@@ -79,6 +93,7 @@ export async function runTaskFlow(opts: TaskFlowOptions): Promise<void> {
       ...(opts.budgetUsd !== undefined ? { budgetUsd: opts.budgetUsd } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.installDeps !== undefined ? { installDeps: opts.installDeps } : {}),
+      intent,
     });
   } finally {
     process.removeListener('SIGINT', onSigint);
@@ -87,6 +102,21 @@ export async function runTaskFlow(opts: TaskFlowOptions): Promise<void> {
   if (outcome.status !== 'succeeded') {
     reportFailure(outcome, out);
     process.exitCode = 1;
+    return;
+  }
+
+  if (outcome.intent === 'inquiry') {
+    out.info('');
+    out.info(outcome.agentFinalText.trim());
+    out.result({
+      runId: outcome.runId,
+      status: outcome.status,
+      intent: outcome.intent,
+      answer: outcome.agentFinalText.trim(),
+      attempts: outcome.attempts,
+      totalCostUsd: outcome.totalCostUsd,
+      applied: false,
+    });
     return;
   }
 
@@ -183,6 +213,7 @@ export async function runTaskFlow(opts: TaskFlowOptions): Promise<void> {
   out.result({
     runId: outcome.runId,
     status: outcome.status,
+    intent: outcome.intent,
     summary: outcome.summary,
     changedFiles: outcome.changedFiles,
     checks: outcome.checks.map((c) => ({ name: c.name, cmd: c.cmd, pass: c.pass })),

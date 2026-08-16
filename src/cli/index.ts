@@ -19,7 +19,7 @@ import { EXP_BRANCH_PREFIX, WorktreeBackend, gitOutput, snapshotRepo } from '../
 import { runDemo } from './demo.js';
 import { type PresetName, applyPreset, runOptimizeWithUi } from './optimize-ui.js';
 import { Output } from './output.js';
-import { looksLikePerformanceRequest, runTaskFlow } from './task-ui.js';
+import { looksLikeInquiryRequest, looksLikePerformanceRequest, runTaskFlow } from './task-ui.js';
 
 const program = new Command();
 
@@ -40,9 +40,7 @@ program
 
 program
   .command('task [request...]', { isDefault: true })
-  .description(
-    'Describe a change in plain English; paxcli isolates, implements, validates, and applies it',
-  )
+  .description('Ask about the repository or describe a change in plain English')
   .option('--host <id>', 'claude-code | codex | mock (default: auto-detect)')
   .option('--model <model>', 'model override for the agent')
   .option('--budget <usd>', 'maximum agent spend in USD', '5')
@@ -720,7 +718,7 @@ async function taskCommand(request: string[], opts: TaskCmdOpts, out: Output): P
 
   // Performance-flavored requests use the verified optimization engine when a
   // benchmark exists; otherwise task mode runs with an honest "not measured" note.
-  if (looksLikePerformanceRequest(task)) {
+  if (!looksLikeInquiryRequest(task) && looksLikePerformanceRequest(task)) {
     let config: PaxcliConfig | null = null;
     try {
       config = await loadConfig(cwd);

@@ -136,4 +136,36 @@ describe('runTask', () => {
     expect(outcome.reason).toContain('NOT tested');
     await cleanupTaskWorktree(root, outcome);
   }, 120_000);
+
+  it('answers repository questions successfully without requiring changes or running checks', async () => {
+    const host = new MockHostAdapter([{ hypothesis: 'The app reads app.js.', files: {} }]);
+    const outcome = await runTask({
+      ...taskOpts(host, discovery()),
+      task: 'tell me how this product works',
+      intent: 'inquiry',
+    });
+
+    expect(outcome.status).toBe('succeeded');
+    expect(outcome.intent).toBe('inquiry');
+    expect(outcome.reason).toContain('without changing any files');
+    expect(outcome.checks).toEqual([]);
+    expect(outcome.changedFiles).toEqual([]);
+    expect(outcome.resultSha).toBeNull();
+    expect(outcome.worktreePath).toBeNull();
+  }, 120_000);
+
+  it('rejects file changes made while answering a repository question', async () => {
+    const host = new MockHostAdapter([
+      { hypothesis: 'unrequested edit', files: { 'app.js': 'now fixed\n' } },
+    ]);
+    const outcome = await runTask({
+      ...taskOpts(host, discovery()),
+      task: 'explain how this product works',
+      intent: 'inquiry',
+    });
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.reason).toContain('file changes were not authorized');
+    expect(await readFile(path.join(root, 'app.js'), 'utf8')).toBe('broken\n');
+  }, 120_000);
 });

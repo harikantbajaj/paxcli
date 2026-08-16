@@ -13,7 +13,12 @@ import { EngineLock, EventStore } from '../tree/store.js';
 import type { ExperimentNode, GateResult } from '../tree/types.js';
 import { runId as newRunId, shortId } from '../util/ids.js';
 import { Worktree, WorktreeBackend } from '../worktree/local.js';
-import { buildRepairPrompt, buildTaskPrompt, extractSummary } from './task-prompt.js';
+import {
+  buildInquiryPrompt,
+  buildRepairPrompt,
+  buildTaskPrompt,
+  extractSummary,
+} from './task-prompt.js';
 
 /**
  * General task mode: one agent, one isolated worktree branched from an
@@ -104,6 +109,8 @@ export interface TaskRunOptions {
   model?: string;
   /** Set false to skip dependency installation in the worktree (tests). */
   installDeps?: boolean;
+  /** Questions are answered read-only and do not require a diff or validation. */
+  intent?: 'change' | 'inquiry';
 }
 
 export interface TaskCheckResult {
@@ -137,6 +144,7 @@ export interface TaskOutcome {
   worktreePath: string | null;
   worktreeBranch: string | null;
   agentFinalText: string;
+  intent: 'change' | 'inquiry';
 }
 
 export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
@@ -144,6 +152,7 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
   const budgetUsd = opts.budgetUsd ?? 5;
   const agentTimeoutMs = opts.agentTimeoutMs ?? 15 * 60 * 1000;
   const maxRepairs = opts.maxRepairs ?? 2;
+  const intent = opts.intent ?? 'change';
 
   const id = newRunId();
   const store = await EventStore.create(repoRoot, id);
@@ -176,6 +185,7 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
     worktreePath: null,
     worktreeBranch: null,
     agentFinalText: '',
+    intent,
   };
 
   const detection = await host.detect();
@@ -249,7 +259,7 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
     node.branch = wt.branch;
     await store.append({ type: 'node_created', node });
 
-    if (discovery.installCmd && opts.installDeps !== false) {
+    if (intent === 'change' && discovery.installCmd && opts.installDeps !== false) {
       onStatus(`Installing dependencies in the isolated worktree (${discovery.installCmd})`);
       const install = await execa(discovery.installCmd, {
         cwd: wt.path,
@@ -294,7 +304,10 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
     });
 
     const maxAttempts = 1 + maxRepairs;
-    let prompt = buildTaskPrompt({ task, discovery, protectedGlobs: discovery.protectedGlobs });
+    let prompt =
+      intent === 'inquiry'
+        ? buildInquiryPrompt({ question: task, discovery })
+        : buildTaskPrompt({ task, discovery, protectedGlobs: discovery.protectedGlobs });
 
     await store.append({ type: 'node_updated', nodeId: node.id, patch: { status: 'running' } });
 
@@ -374,9 +387,22 @@ export async function runTask(opts: TaskRunOptions): Promise<TaskOutcome> {
 
       outcome.changedFiles = await taskChangedFiles(wt.path);
       if (outcome.changedFiles.length === 0) {
+        if (intent === 'inquiry') {
+          outcome.summary = 'Repository question answered.';
+          await finish('succeeded', 'Repository question answered without changing any files.');
+          return outcome;
+        }
         await finish(
           'failed',
           `The agent made no file changes. Its final message:\n${agentResult.finalText.slice(0, 800)}`,
+        );
+        return outcome;
+      }
+
+      if (intent === 'inquiry') {
+        await finish(
+          'rejected',
+          `This was a repository question, so file changes were not authorized: ${outcome.changedFiles.join(', ')}.`,
         );
         return outcome;
       }

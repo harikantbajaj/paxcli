@@ -39,6 +39,35 @@ export function buildTaskPrompt(params: {
   return lines.join('\n');
 }
 
+/**
+ * Repository questions are not implementation tasks. Keep the agent focused on
+ * high-signal sources and explicitly forbid edits so an answer cannot quietly
+ * turn into an unrequested change.
+ */
+export function buildInquiryPrompt(params: {
+  question: string;
+  discovery: RepoDiscovery;
+}): string {
+  const { question, discovery } = params;
+  return [
+    'Answer a question about this repository. Do not implement or modify anything.',
+    '',
+    'USER QUESTION:',
+    question,
+    '',
+    'REPOSITORY FACTS (auto-detected):',
+    `- Language: ${discovery.language ?? 'unknown'}${discovery.packageManager ? ` (${discovery.packageManager})` : ''}`,
+    '',
+    'INSTRUCTIONS:',
+    '- Read only the files needed to answer accurately. Start with high-signal documentation and entry points, then stop once the evidence is sufficient.',
+    '- Do not edit, create, delete, format, install, build, or run the test suite.',
+    '- Lead with a direct answer. Keep it concise unless the question asks for detail.',
+    '- Ground important claims in the repository and mention relevant file paths.',
+    '- Clearly label anything you infer rather than confirming from the code.',
+    '- Return only the answer; do not add a SUMMARY line or discuss making no changes.',
+  ].join('\n');
+}
+
 export function buildRepairPrompt(params: {
   task: string;
   checkName: string;
